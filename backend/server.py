@@ -6,6 +6,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
+from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import logging
@@ -17,6 +18,13 @@ import bcrypt
 import jwt
 import secrets
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+import csv
+import io
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -478,6 +486,408 @@ INSIGHTS:
         logging.error(f"AI analysis error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to analyze finances: {str(e)}")
 
+
+# ============== CATEGORIES MANAGEMENT ==============
+
+class CategoryCreate(BaseModel):
+    name: str
+    type: str  # "income" or "expense"
+    icon: Optional[str] = ""
+
+class CategoryResponse(BaseModel):
+    id: str
+    user_id: str
+    name: str
+    type: str
+    icon: str
+    is_default: bool
+    created_at: str
+
+@api_router.get("/categories")
+async def get_categories(user: dict = Depends(get_current_user)):
+    # Get default categories
+    default_categories = [
+        {"name": "Salary", "type": "income", "icon": "💼", "is_default": True},
+        {"name": "Freelance", "type": "income", "icon": "💻", "is_default": True},
+        {"name": "Investment", "type": "income", "icon": "📈", "is_default": True},
+        {"name": "Gift", "type": "income", "icon": "🎁", "is_default": True},
+        {"name": "Other Income", "type": "income", "icon": "💰", "is_default": True},
+        {"name": "Food", "type": "expense", "icon": "🍔", "is_default": True},
+        {"name": "Transport", "type": "expense", "icon": "🚗", "is_default": True},
+        {"name": "Shopping", "type": "expense", "icon": "🛍️", "is_default": True},
+        {"name": "Bills", "type": "expense", "icon": "📄", "is_default": True},
+        {"name": "Entertainment", "type": "expense", "icon": "🎬", "is_default": True},
+        {"name": "Healthcare", "type": "expense", "icon": "🏥", "is_default": True},
+        {"name": "Education", "type": "expense", "icon": "📚", "is_default": True},
+        {"name": "Other Expense", "type": "expense", "icon": "💸", "is_default": True},
+    ]
+    
+    # Get custom categories
+    custom_categories = await db.categories.find({"user_id": user["id"]}, {"_id": 0}).to_list(100)
+    for cat in custom_categories:
+        cat["is_default"] = False
+    
+    return default_categories + custom_categories
+
+@api_router.post("/categories")
+async def create_category(category: CategoryCreate, user: dict = Depends(get_current_user)):
+    if category.type not in ["income", "expense"]:
+        raise HTTPException(status_code=400, detail="Type must be 'income' or 'expense'")
+    
+    cat_doc = {
+        "id": str(ObjectId()),
+        "user_id": user["id"],
+        "name": category.name,
+        "type": category.type,
+        "icon": category.icon or "📌",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.categories.insert_one(cat_doc)
+    cat_doc["is_default"] = False
+    cat_doc.pop("_id", None)
+    return cat_doc
+
+@api_router.delete("/categories/{category_id}")
+async def delete_category(category_id: str, user: dict = Depends(get_current_user)):
+    result = await db.categories.delete_one({"id": category_id, "user_id": user["id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return {"message": "Category deleted"}
+
+# ============== BUDGET MANAGEMENT ==============
+
+class BudgetCreate(BaseModel):
+    category: str
+    limit: float
+    period: str = "monthly"  # monthly, weekly, yearly
+
+class BudgetResponse(BaseModel):
+    id: str
+    user_id: str
+    category: str
+    limit: float
+    spent: float
+    period: str
+    percentage: float
+    status: str  # "safe", "warning", "exceeded"
+    created_at: str
+
+@api_router.get("/budgets")
+async def get_budgets(user: dict = Depends(get_current_user)):
+    budgets = await db.budgets.find({"user_id": user["id"]}, {"_id": 0}).to_list(100)
+    
+    # Calculate spent amounts for each budget
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    
+    for budget in budgets:
+        # Get transactions for this category in current period
+        transactions = await db.transactions.find({
+            "user_id": user["id"],
+            "type": "expense",
+            "category": budget["category"],
+            "date": {"$regex": f"^{current_month}"}
+        }).to_list(1000)
+        
+        spent = sum(t["amount"] for t in transactions)
+        budget["spent"] = round(spent, 2)
+        budget["percentage"] = round((spent / budget["limit"]) * 100, 1) if budget["limit"] > 0 else 0
+        
+        if budget["percentage"] >= 100:
+            budget["status"] = "exceeded"
+        elif budget["percentage"] >= 80:
+            budget["status"] = "warning"
+        else:
+            budget["status"] = "safe"
+    
+    return budgets
+
+@api_router.post("/budgets")
+async def create_budget(budget: BudgetCreate, user: dict = Depends(get_current_user)):
+    if budget.limit <= 0:
+        raise HTTPException(status_code=400, detail="Budget limit must be greater than 0")
+    
+    # Check if budget already exists for this category
+    existing = await db.budgets.find_one({"user_id": user["id"], "category": budget.category})
+    if existing:
+        raise HTTPException(status_code=400, detail="Budget already exists for this category")
+    
+    budget_doc = {
+        "id": str(ObjectId()),
+        "user_id": user["id"],
+        "category": budget.category,
+        "limit": budget.limit,
+        "period": budget.period,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.budgets.insert_one(budget_doc)
+    budget_doc.pop("_id", None)
+    budget_doc["spent"] = 0
+    budget_doc["percentage"] = 0
+    budget_doc["status"] = "safe"
+    return budget_doc
+
+@api_router.put("/budgets/{budget_id}")
+async def update_budget(budget_id: str, budget: BudgetCreate, user: dict = Depends(get_current_user)):
+    result = await db.budgets.update_one(
+        {"id": budget_id, "user_id": user["id"]},
+        {"$set": {"limit": budget.limit, "period": budget.period}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Budget not found")
+    return {"message": "Budget updated"}
+
+@api_router.delete("/budgets/{budget_id}")
+async def delete_budget(budget_id: str, user: dict = Depends(get_current_user)):
+    result = await db.budgets.delete_one({"id": budget_id, "user_id": user["id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Budget not found")
+    return {"message": "Budget deleted"}
+
+# ============== RECURRING TRANSACTIONS ==============
+
+class RecurringTransactionCreate(BaseModel):
+    type: str  # "income" or "expense"
+    amount: float
+    category: str
+    description: Optional[str] = ""
+    frequency: str  # "daily", "weekly", "monthly", "yearly"
+    start_date: str
+    end_date: Optional[str] = None
+
+class RecurringTransactionResponse(BaseModel):
+    id: str
+    user_id: str
+    type: str
+    amount: float
+    category: str
+    description: str
+    frequency: str
+    start_date: str
+    end_date: Optional[str]
+    next_occurrence: str
+    is_active: bool
+    created_at: str
+
+@api_router.get("/recurring-transactions")
+async def get_recurring_transactions(user: dict = Depends(get_current_user)):
+    recurring = await db.recurring_transactions.find({"user_id": user["id"]}, {"_id": 0}).to_list(100)
+    return recurring
+
+@api_router.post("/recurring-transactions")
+async def create_recurring_transaction(recurring: RecurringTransactionCreate, user: dict = Depends(get_current_user)):
+    if recurring.type not in ["income", "expense"]:
+        raise HTTPException(status_code=400, detail="Type must be 'income' or 'expense'")
+    
+    if recurring.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
+    
+    if recurring.frequency not in ["daily", "weekly", "monthly", "yearly"]:
+        raise HTTPException(status_code=400, detail="Invalid frequency")
+    
+    recurring_doc = {
+        "id": str(ObjectId()),
+        "user_id": user["id"],
+        "type": recurring.type,
+        "amount": recurring.amount,
+        "category": recurring.category,
+        "description": recurring.description or "",
+        "frequency": recurring.frequency,
+        "start_date": recurring.start_date,
+        "end_date": recurring.end_date,
+        "next_occurrence": recurring.start_date,
+        "is_active": True,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.recurring_transactions.insert_one(recurring_doc)
+    recurring_doc.pop("_id", None)
+    return recurring_doc
+
+@api_router.delete("/recurring-transactions/{recurring_id}")
+async def delete_recurring_transaction(recurring_id: str, user: dict = Depends(get_current_user)):
+    result = await db.recurring_transactions.delete_one({"id": recurring_id, "user_id": user["id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Recurring transaction not found")
+    return {"message": "Recurring transaction deleted"}
+
+@api_router.post("/recurring-transactions/process")
+async def process_recurring_transactions(user: dict = Depends(get_current_user)):
+    """Manually trigger processing of recurring transactions"""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    recurring_list = await db.recurring_transactions.find({
+        "user_id": user["id"],
+        "is_active": True,
+        "next_occurrence": {"$lte": today}
+    }).to_list(100)
+    
+    created_count = 0
+    for recurring in recurring_list:
+        # Create transaction
+        trans_doc = {
+            "user_id": user["id"],
+            "type": recurring["type"],
+            "amount": recurring["amount"],
+            "category": recurring["category"],
+            "description": f"{recurring['description']} (Recurring)",
+            "date": recurring["next_occurrence"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "id": str(ObjectId())
+        }
+        await db.transactions.insert_one(trans_doc)
+        created_count += 1
+        
+        # Calculate next occurrence
+        next_date = datetime.fromisoformat(recurring["next_occurrence"])
+        if recurring["frequency"] == "daily":
+            next_date += timedelta(days=1)
+        elif recurring["frequency"] == "weekly":
+            next_date += timedelta(weeks=1)
+        elif recurring["frequency"] == "monthly":
+            # Add one month
+            if next_date.month == 12:
+                next_date = next_date.replace(year=next_date.year + 1, month=1)
+            else:
+                next_date = next_date.replace(month=next_date.month + 1)
+        elif recurring["frequency"] == "yearly":
+            next_date = next_date.replace(year=next_date.year + 1)
+        
+        # Update next occurrence
+        await db.recurring_transactions.update_one(
+            {"id": recurring["id"]},
+            {"$set": {"next_occurrence": next_date.strftime("%Y-%m-%d")}}
+        )
+    
+    return {"message": f"Processed {created_count} recurring transactions"}
+
+# ============== EXPORT FUNCTIONALITY ==============
+
+@api_router.get("/export/csv")
+async def export_csv(user: dict = Depends(get_current_user)):
+    transactions = await db.transactions.find({"user_id": user["id"]}).sort("date", -1).to_list(10000)
+    
+    # Create CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Write header
+    writer.writerow(["Date", "Type", "Category", "Amount", "Description"])
+    
+    # Write data
+    for trans in transactions:
+        writer.writerow([
+            trans["date"],
+            trans["type"].title(),
+            trans["category"],
+            f"${trans['amount']:.2f}",
+            trans.get("description", "")
+        ])
+    
+    # Create response
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=transactions_{datetime.now().strftime('%Y%m%d')}.csv"}
+    )
+
+@api_router.get("/export/pdf")
+async def export_pdf(user: dict = Depends(get_current_user)):
+    transactions = await db.transactions.find({"user_id": user["id"]}).sort("date", -1).to_list(10000)
+    summary = await db.transactions.aggregate([
+        {"$match": {"user_id": user["id"]}},
+        {"$group": {
+            "_id": "$type",
+            "total": {"$sum": "$amount"}
+        }}
+    ]).to_list(10)
+    
+    # Calculate totals
+    total_income = sum(s["total"] for s in summary if s["_id"] == "income")
+    total_expenses = sum(s["total"] for s in summary if s["_id"] == "expense")
+    balance = total_income - total_expenses
+    
+    # Create PDF in memory
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    elements = []
+    
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#09090B'),
+        spaceAfter=30,
+    )
+    
+    # Title
+    elements.append(Paragraph("Financial Report", title_style))
+    elements.append(Paragraph(f"Generated on {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
+    elements.append(Spacer(1, 0.3*inch))
+    
+    # Summary table
+    summary_data = [
+        ["Summary", "Amount"],
+        ["Total Income", f"${total_income:.2f}"],
+        ["Total Expenses", f"${total_expenses:.2f}"],
+        ["Balance", f"${balance:.2f}"]
+    ]
+    
+    summary_table = Table(summary_data, colWidths=[3*inch, 2*inch])
+    summary_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#09090B')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 14),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+    
+    elements.append(summary_table)
+    elements.append(Spacer(1, 0.5*inch))
+    
+    # Transactions table
+    elements.append(Paragraph("Transactions", styles['Heading2']))
+    elements.append(Spacer(1, 0.2*inch))
+    
+    trans_data = [["Date", "Type", "Category", "Amount", "Description"]]
+    for trans in transactions[:50]:  # Limit to 50 for PDF
+        trans_data.append([
+            trans["date"],
+            trans["type"].title(),
+            trans["category"],
+            f"${trans['amount']:.2f}",
+            (trans.get("description", ""))[:30]
+        ])
+    
+    trans_table = Table(trans_data, colWidths=[1.2*inch, 0.8*inch, 1.2*inch, 1*inch, 2*inch])
+    trans_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#09090B')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
+    ]))
+    
+    elements.append(trans_table)
+    
+    # Build PDF
+    doc.build(elements)
+    buffer.seek(0)
+    
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=financial_report_{datetime.now().strftime('%Y%m%d')}.pdf"}
+    )
+
 # ============== STARTUP EVENTS ==============
 
 @app.on_event("startup")
@@ -486,6 +896,9 @@ async def startup_event():
     await db.users.create_index("email", unique=True)
     await db.login_attempts.create_index("identifier")
     await db.transactions.create_index([("user_id", 1), ("date", -1)])
+    await db.categories.create_index([("user_id", 1), ("name", 1)])
+    await db.budgets.create_index([("user_id", 1), ("category", 1)])
+    await db.recurring_transactions.create_index([("user_id", 1), ("next_occurrence", 1)])
     
     # Seed admin user
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@financeapp.com")

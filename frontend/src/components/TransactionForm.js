@@ -1,22 +1,43 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Plus } from '@phosphor-icons/react';
 import axios from 'axios';
 import { toast } from 'sonner';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
 
-const CATEGORIES = {
-  income: ['Salary', 'Freelance', 'Investment', 'Gift', 'Other'],
-  expense: ['Food', 'Transport', 'Shopping', 'Bills', 'Entertainment', 'Healthcare', 'Education', 'Other'],
-};
-
 export const TransactionForm = ({ onTransactionAdded }) => {
   const [type, setType] = useState('expense');
   const [amount, setAmount] = useState('');
-  const [category, setCategory] = useState('Food');
+  const [category, setCategory] = useState('');
   const [description, setDescription] = useState('');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [loading, setLoading] = useState(false);
+  const [categories, setCategories] = useState([]);
+
+  useEffect(() => {
+    fetchCategories();
+  }, []);
+
+  useEffect(() => {
+    // Reset category when type changes
+    const typeCategories = categories.filter(c => c.type === type);
+    if (typeCategories.length > 0 && !typeCategories.find(c => c.name === category)) {
+      setCategory(typeCategories[0].name);
+    }
+  }, [type, categories]);
+
+  const fetchCategories = async () => {
+    try {
+      const { data } = await axios.get(`${API_URL}/api/categories`, { withCredentials: true });
+      setCategories(data);
+      const expenseCategories = data.filter(c => c.type === 'expense');
+      if (expenseCategories.length > 0) {
+        setCategory(expenseCategories[0].name);
+      }
+    } catch (error) {
+      console.error('Failed to load categories');
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -66,7 +87,10 @@ export const TransactionForm = ({ onTransactionAdded }) => {
                 type="button"
                 onClick={() => {
                   setType('income');
-                  setCategory('Salary');
+                  const incomeCategories = categories.filter(c => c.type === 'income');
+                  if (incomeCategories.length > 0) {
+                    setCategory(incomeCategories[0].name);
+                  }
                 }}
                 className={`flex-1 py-3 rounded-lg font-medium transition-all font-['Manrope'] ${
                   type === 'income'
@@ -81,7 +105,10 @@ export const TransactionForm = ({ onTransactionAdded }) => {
                 type="button"
                 onClick={() => {
                   setType('expense');
-                  setCategory('Food');
+                  const expenseCategories = categories.filter(c => c.type === 'expense');
+                  if (expenseCategories.length > 0) {
+                    setCategory(expenseCategories[0].name);
+                  }
                 }}
                 className={`flex-1 py-3 rounded-lg font-medium transition-all font-['Manrope'] ${
                   type === 'expense'
@@ -126,9 +153,9 @@ export const TransactionForm = ({ onTransactionAdded }) => {
               className="w-full bg-[#FDFDFD] border border-[#E4E4E7] rounded-lg px-4 py-3 text-base focus:border-[#09090B] focus:ring-1 focus:ring-[#09090B] outline-none transition-all font-['Manrope']"
               data-testid="category-select"
             >
-              {CATEGORIES[type].map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
+              {categories.filter(c => c.type === type).map((cat) => (
+                <option key={cat.id || cat.name} value={cat.name}>
+                  {cat.icon} {cat.name}
                 </option>
               ))}
             </select>
