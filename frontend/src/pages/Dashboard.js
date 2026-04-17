@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import { SummaryCards } from '../components/SummaryCards';
 import { TransactionForm } from '../components/TransactionForm';
 import { TransactionList } from '../components/TransactionList';
 import { ChartsSection } from '../components/ChartsSection';
 import { AIInsightsModal } from '../components/AIInsightsModal';
-import { SignOut, Sparkle, Gear, Target, ArrowsClockwise, DownloadSimple } from '@phosphor-icons/react';
+import { BottomNav } from '../components/BottomNav';
+import { SignOut, Sparkle, Moon, Sun, DownloadSimple, Target } from '@phosphor-icons/react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 
@@ -13,6 +15,7 @@ const API_URL = process.env.REACT_APP_BACKEND_URL;
 
 export const Dashboard = () => {
   const { user, logout } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const [summary, setSummary] = useState({ total_income: 0, total_expenses: 0, balance: 0, transaction_count: 0 });
   const [transactions, setTransactions] = useState([]);
@@ -20,12 +23,9 @@ export const Dashboard = () => {
   const [showAIModal, setShowAIModal] = useState(false);
   const [aiAnalyzing, setAiAnalyzing] = useState(false);
   const [aiInsights, setAiInsights] = useState(null);
-  const [budgets, setBudgets] = useState([]);
   const [budgetAlerts, setBudgetAlerts] = useState([]);
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useEffect(() => { fetchData(); }, []);
 
   const fetchData = async () => {
     setLoading(true);
@@ -37,209 +37,137 @@ export const Dashboard = () => {
       ]);
       setSummary(summaryRes.data);
       setTransactions(transactionsRes.data);
-      setBudgets(budgetsRes.data);
-      
-      // Check for budget alerts
-      const alerts = budgetsRes.data.filter(b => b.status === 'warning' || b.status === 'exceeded');
-      setBudgetAlerts(alerts);
-    } catch (error) {
-      console.error('Failed to fetch data:', error);
-    } finally {
-      setLoading(false);
-    }
+      setBudgetAlerts(budgetsRes.data.filter(b => b.status === 'warning' || b.status === 'exceeded'));
+    } catch (error) { console.error('Failed to fetch data:', error); }
+    finally { setLoading(false); }
   };
 
   const handleAnalyze = async () => {
-    if (transactions.length === 0) {
-      alert('Please add some transactions first!');
-      return;
-    }
-
-    setAiAnalyzing(true);
-    setShowAIModal(true);
+    if (transactions.length === 0) { alert('Add some transactions first!'); return; }
+    setAiAnalyzing(true); setShowAIModal(true);
     try {
-      const { data } = await axios.post(
-        `${API_URL}/api/analyze`,
-        {},
-        { withCredentials: true }
-      );
+      const { data } = await axios.post(`${API_URL}/api/analyze`, {}, { withCredentials: true });
       setAiInsights(data);
     } catch (error) {
-      console.error('AI analysis failed:', error);
-      alert(error.response?.data?.detail || 'Failed to analyze finances');
+      alert(error.response?.data?.detail || 'Failed to analyze');
       setShowAIModal(false);
-    } finally {
-      setAiAnalyzing(false);
-    }
+    } finally { setAiAnalyzing(false); }
   };
 
   const handleExport = async (format) => {
     try {
-      const response = await axios.get(`${API_URL}/api/export/${format}`, {
-        withCredentials: true,
-        responseType: 'blob'
-      });
+      const response = await axios.get(`${API_URL}/api/export/${format}`, { withCredentials: true, responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
+      const link = document.createElement('a'); link.href = url;
       link.setAttribute('download', `financial_report.${format}`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-    } catch (error) {
-      console.error('Export failed:', error);
-      alert('Failed to export data');
-    }
+      document.body.appendChild(link); link.click(); link.remove();
+    } catch (error) { alert('Failed to export data'); }
   };
 
   return (
-    <div className="min-h-screen bg-[#FDFDFD]" data-testid="dashboard-page">
-      {/* Header */}
-      <header className="sticky top-0 z-50 backdrop-blur-xl bg-white/80 border-b border-[#E4E4E7]">
-        <div className="max-w-[1600px] mx-auto px-6 lg:px-10 py-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl lg:text-3xl font-bold tracking-tight text-[#09090B] font-['Outfit']">
-              Finance Dashboard
-            </h1>
-            <p className="text-sm text-[#52525B] font-['Manrope'] mt-1">Welcome back, {user?.name || 'User'}</p>
-          </div>
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => navigate('/categories')}
-              className="bg-transparent text-[#09090B] border border-[#E4E4E7] rounded-lg px-4 py-3 font-medium transition-all hover:border-[#09090B] flex items-center gap-2 font-['Manrope']"
-              data-testid="categories-button"
-              title="Manage Categories"
-            >
-              <Gear size={20} />
-              <span className="hidden lg:inline">Categories</span>
-            </button>
-            <button
-              onClick={() => navigate('/budgets')}
-              className="bg-transparent text-[#09090B] border border-[#E4E4E7] rounded-lg px-4 py-3 font-medium transition-all hover:border-[#09090B] flex items-center gap-2 font-['Manrope']"
-              data-testid="budgets-button"
-              title="Budget Settings"
-            >
-              <Target size={20} />
-              <span className="hidden lg:inline">Budgets</span>
-            </button>
-            <button
-              onClick={() => navigate('/recurring')}
-              className="bg-transparent text-[#09090B] border border-[#E4E4E7] rounded-lg px-4 py-3 font-medium transition-all hover:border-[#09090B] flex items-center gap-2 font-['Manrope']"
-              data-testid="recurring-button"
-              title="Recurring Transactions"
-            >
-              <ArrowsClockwise size={20} />
-              <span className="hidden lg:inline">Recurring</span>
-            </button>
-            <div className="relative group">
-              <button
-                className="bg-transparent text-[#09090B] border border-[#E4E4E7] rounded-lg px-4 py-3 font-medium transition-all hover:border-[#09090B] flex items-center gap-2 font-['Manrope']"
-                data-testid="export-button"
-                title="Export Data"
-              >
-                <DownloadSimple size={20} />
-                <span className="hidden lg:inline">Export</span>
+    <div className="min-h-screen bg-[var(--surface-0)] pb-20 md:pb-0" data-testid="dashboard-page">
+      {/* ── Desktop Top Bar ── */}
+      <header className="sticky top-0 z-40 backdrop-blur-xl bg-[var(--nav-bg)] border-b border-[var(--border-default)]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-[var(--text-primary)]">
+            Finance<span className="text-[var(--accent-blue)]">.</span>
+          </h1>
+          <div className="flex items-center gap-2">
+            {/* Desktop nav links */}
+            <nav className="hidden md:flex items-center gap-1 mr-2">
+              {[
+                { label: 'Categories', path: '/categories' },
+                { label: 'Budgets', path: '/budgets' },
+                { label: 'Recurring', path: '/recurring' },
+              ].map(item => (
+                <button key={item.path} onClick={() => navigate(item.path)}
+                  className="px-3 py-1.5 rounded-md text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)] transition-all"
+                  data-testid={`nav-${item.label.toLowerCase()}`}>
+                  {item.label}
+                </button>
+              ))}
+            </nav>
+            {/* Export dropdown */}
+            <div className="relative group hidden md:block">
+              <button className="p-2 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)] transition-all" data-testid="export-button" title="Export">
+                <DownloadSimple size={18} />
               </button>
-              <div className="absolute right-0 top-full mt-2 w-40 bg-white border border-[#E4E4E7] rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
-                <button
-                  onClick={() => handleExport('csv')}
-                  className="w-full text-left px-4 py-2 hover:bg-[#F4F4F5] transition-colors text-[#09090B] font-['Manrope'] text-sm rounded-t-lg"
-                  data-testid="export-csv-button"
-                >
-                  Export as CSV
-                </button>
-                <button
-                  onClick={() => handleExport('pdf')}
-                  className="w-full text-left px-4 py-2 hover:bg-[#F4F4F5] transition-colors text-[#09090B] font-['Manrope'] text-sm rounded-b-lg"
-                  data-testid="export-pdf-button"
-                >
-                  Export as PDF
-                </button>
+              <div className="absolute right-0 top-full mt-1 w-40 bg-[var(--surface-0)] border border-[var(--border-default)] rounded-xl shadow-[var(--shadow-lg)] opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 overflow-hidden">
+                <button onClick={() => handleExport('csv')} className="w-full text-left px-4 py-2.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] transition-colors" data-testid="export-csv-button">Export CSV</button>
+                <button onClick={() => handleExport('pdf')} className="w-full text-left px-4 py-2.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] transition-colors" data-testid="export-pdf-button">Export PDF</button>
               </div>
             </div>
-            <button
-              onClick={handleAnalyze}
-              disabled={aiAnalyzing || transactions.length === 0}
-              className="bg-[#1D4ED8] text-white rounded-lg px-6 py-3 font-semibold tracking-wide transition-all shadow-[0_0_20px_rgba(29,78,216,0.3)] hover:shadow-[0_0_30px_rgba(29,78,216,0.5)] hover:bg-[#1E3A8A] flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-['Manrope']"
-              data-testid="analyze-finances-button"
-            >
-              <Sparkle size={20} weight="fill" />
-              {aiAnalyzing ? 'Analyzing...' : 'Analyze My Finances'}
+            {/* Theme toggle */}
+            <button onClick={toggleTheme} className="p-2 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)] transition-all" data-testid="theme-toggle">
+              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            <button
-              onClick={logout}
-              className="bg-transparent text-[#09090B] border border-[#E4E4E7] rounded-lg px-4 py-3 font-medium transition-all hover:border-[#09090B] flex items-center gap-2 font-['Manrope']"
-              data-testid="logout-button"
-            >
-              <SignOut size={20} />
-              Sign Out
+            {/* Analyze CTA */}
+            <button onClick={handleAnalyze} disabled={aiAnalyzing || transactions.length === 0}
+              className="hidden sm:flex items-center gap-2 h-9 px-4 rounded-lg bg-[var(--accent-blue)] text-white text-sm font-semibold transition-all hover:bg-[var(--accent-blue-hover)] disabled:opacity-40 disabled:cursor-not-allowed shadow-[0_0_16px_rgba(59,130,246,0.25)]"
+              data-testid="analyze-finances-button">
+              <Sparkle size={16} weight="fill" />
+              <span className="hidden md:inline">{aiAnalyzing ? 'Analyzing...' : 'Analyze'}</span>
+            </button>
+            {/* Avatar / Logout */}
+            <button onClick={logout} className="p-2 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)] transition-all" data-testid="logout-button" title="Sign out">
+              <SignOut size={18} />
             </button>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-[1600px] mx-auto p-6 lg:p-10">
+      {/* ── Main Content ── */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         {loading ? (
           <div className="flex items-center justify-center py-20">
-            <div className="text-center">
-              <div className="inline-block h-12 w-12 animate-spin rounded-full border-4 border-solid border-[#09090B] border-r-transparent"></div>
-              <p className="mt-4 text-[#52525B] font-['Manrope']">Loading your data...</p>
-            </div>
+            <div className="inline-block h-10 w-10 animate-spin rounded-full border-[3px] border-solid border-[var(--accent-blue)] border-r-transparent"></div>
           </div>
         ) : (
-          <div className="space-y-8">
-            {/* Summary Cards */}
-            <SummaryCards summary={summary} />
+          <>
+            {/* Greeting on mobile */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-[var(--text-tertiary)]">Welcome back,</p>
+                <h2 className="text-xl sm:text-2xl font-bold text-[var(--text-primary)] tracking-tight">{user?.name || 'User'}</h2>
+              </div>
+              {/* Mobile-only Analyze button */}
+              <button onClick={handleAnalyze} disabled={aiAnalyzing || transactions.length === 0}
+                className="flex sm:hidden items-center gap-1.5 h-9 px-4 rounded-lg bg-[var(--accent-blue)] text-white text-sm font-semibold shadow-[0_0_16px_rgba(59,130,246,0.25)] disabled:opacity-40"
+                data-testid="analyze-finances-button-mobile">
+                <Sparkle size={16} weight="fill" />
+                Analyze
+              </button>
+            </div>
 
             {/* Budget Alerts */}
             {budgetAlerts.length > 0 && (
-              <div className="bg-[#FEF3C7] border-2 border-[#F59E0B] rounded-xl p-6" data-testid="budget-alerts">
-                <h3 className="text-lg font-semibold text-[#92400E] font-['Outfit'] mb-4 flex items-center gap-2">
-                  <Target size={24} weight="fill" />
-                  Budget Alerts
-                </h3>
-                <div className="space-y-2">
-                  {budgetAlerts.map((budget) => (
-                    <div key={budget.id} className="flex items-center justify-between text-sm font-['Manrope']">
-                      <span className="text-[#92400E]">
-                        <strong>{budget.category}</strong>: {budget.status === 'exceeded' ? 'Exceeded' : 'Warning'} - {budget.percentage}% used
-                      </span>
-                      <span className="font-semibold text-[#92400E]">
-                        ${budget.spent.toFixed(2)} / ${budget.limit.toFixed(2)}
-                      </span>
-                    </div>
-                  ))}
+              <div className="bg-[#FEF3C7] dark:bg-yellow-900/20 border border-[#FCD34D] dark:border-yellow-700/40 rounded-xl p-4" data-testid="budget-alerts">
+                <div className="flex items-center gap-2 mb-2">
+                  <Target size={18} weight="fill" className="text-[#D97706]" />
+                  <p className="text-sm font-semibold text-[#92400E] dark:text-yellow-400">Budget Alerts</p>
                 </div>
-                <button
-                  onClick={() => navigate('/budgets')}
-                  className="mt-4 text-sm text-[#92400E] underline hover:text-[#78350F] font-['Manrope']"
-                >
-                  Manage Budgets →
-                </button>
+                {budgetAlerts.map(b => (
+                  <p key={b.id} className="text-sm text-[#92400E] dark:text-yellow-300 ml-6">
+                    <strong>{b.category}</strong>: {b.percentage}% used (${b.spent.toFixed(2)} / ${b.limit.toFixed(2)})
+                  </p>
+                ))}
               </div>
             )}
 
-            {/* Transaction Form */}
+            <SummaryCards summary={summary} />
             <TransactionForm onTransactionAdded={fetchData} />
-
-            {/* Charts Section */}
             <ChartsSection transactions={transactions} />
-
-            {/* Transaction List */}
             <TransactionList transactions={transactions} onTransactionDeleted={fetchData} />
-          </div>
+          </>
         )}
       </main>
 
-      {/* AI Insights Modal */}
+      {/* ── Mobile Bottom Nav ── */}
+      <BottomNav onExport={handleExport} />
+
+      {/* AI Modal */}
       {showAIModal && (
-        <AIInsightsModal
-          isOpen={showAIModal}
-          onClose={() => setShowAIModal(false)}
-          insights={aiInsights}
-          loading={aiAnalyzing}
-        />
+        <AIInsightsModal isOpen={showAIModal} onClose={() => setShowAIModal(false)} insights={aiInsights} loading={aiAnalyzing} />
       )}
     </div>
   );

@@ -7,10 +7,10 @@ export const ProtectedRoute = ({ children }) => {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#FDFDFD]">
+      <div className="min-h-screen flex items-center justify-center bg-[var(--surface-0)]">
         <div className="text-center">
-          <div className="inline-block h-12 w-12 animate-spin rounded-full border-4 border-solid border-[#09090B] border-r-transparent"></div>
-          <p className="mt-4 text-[#52525B] font-['Manrope']">Loading...</p>
+          <div className="inline-block h-10 w-10 animate-spin rounded-full border-[3px] border-solid border-[var(--accent-blue)] border-r-transparent"></div>
+          <p className="mt-4 text-sm text-[var(--text-tertiary)]">Loading...</p>
         </div>
       </div>
     );
