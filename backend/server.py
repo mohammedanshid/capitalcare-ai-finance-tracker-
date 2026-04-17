@@ -417,24 +417,51 @@ Expenses by Category:
 Recent Transactions:
 {chr(10).join([f"- {t['date']}: {t['type'].title()} ${t['amount']:.2f} ({t['category']}) - {t.get('description', 'No description')}" for t in transactions[-20:]])}
 
-Please analyze this data and provide:
+Please analyze this data and provide insights in TWO sections:
+
+SECTION 1 - REASONING:
+Your detailed internal analysis and thought process (this will be hidden by default).
+
+SECTION 2 - INSIGHTS:
+Provide clear, well-structured recommendations using this EXACT format:
+
 1. Spending behavior analysis
+- Key observation 1
+- Key observation 2
+- Key observation 3
+
 2. Overspending patterns (if any)
+- Pattern 1 with specific details
+- Pattern 2 with specific details
+
 3. Money leaks or wasteful spending
+- Leak 1 with recommendation
+- Leak 2 with recommendation
+
 4. Budget optimization suggestions
+- Suggestion 1 with specific numbers
+- Suggestion 2 with specific numbers
+- Suggestion 3 with specific numbers
+
 5. Savings recommendations
+- Recommendation 1 with actionable steps
+- Recommendation 2 with actionable steps
+- Recommendation 3 with actionable steps
+
 6. Action items for better financial health
+- Action 1 (specific and measurable)
+- Action 2 (specific and measurable)
+- Action 3 (specific and measurable)
 
-Format your response in two sections:
-1. REASONING: Your detailed internal analysis and thought process
-2. INSIGHTS: Clear, concise, actionable recommendations for the user (this will be shown to them)
+IMPORTANT: Use bullet points (-) for all items. Be specific with numbers and percentages. Keep each bullet point concise (1-2 sentences max).
 
-Use this exact format:
+Format your complete response as:
+
 REASONING:
 [Your detailed analysis here]
 
 INSIGHTS:
-[User-facing recommendations here]
+[Your structured recommendations here following the exact format above]
 """
     
     try:

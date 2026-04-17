@@ -1,10 +1,76 @@
 import React, { useState } from 'react';
-import { X, CaretDown, CaretUp, Brain } from '@phosphor-icons/react';
+import { X, CaretDown, CaretUp, Brain, CheckCircle } from '@phosphor-icons/react';
 
 export const AIInsightsModal = ({ isOpen, onClose, insights, loading }) => {
   const [showReasoning, setShowReasoning] = useState(false);
 
   if (!isOpen) return null;
+
+  // Function to format AI insights into structured content
+  const formatInsights = (text) => {
+    if (!text) return [];
+    
+    const sections = [];
+    const lines = text.split('\n');
+    let currentSection = null;
+    let currentItems = [];
+    
+    lines.forEach((line, index) => {
+      const trimmedLine = line.trim();
+      
+      // Skip empty lines
+      if (!trimmedLine) {
+        if (currentItems.length > 0 && currentSection) {
+          currentSection.items = currentItems;
+          sections.push(currentSection);
+          currentSection = null;
+          currentItems = [];
+        }
+        return;
+      }
+      
+      // Check if line is a section heading (starts with number like "1.", "2.", etc.)
+      const sectionMatch = trimmedLine.match(/^(\d+)[.)]?\s*(.+)/);
+      if (sectionMatch && trimmedLine.length < 100) {
+        // Save previous section if exists
+        if (currentSection) {
+          currentSection.items = currentItems;
+          sections.push(currentSection);
+        }
+        // Start new section
+        currentSection = {
+          title: sectionMatch[2],
+          items: []
+        };
+        currentItems = [];
+      }
+      // Check if line is a bullet point
+      else if (trimmedLine.match(/^[-•*]\s+(.+)/) || trimmedLine.match(/^\d+\)\s+(.+)/)) {
+        const bulletMatch = trimmedLine.match(/^[-•*]\s+(.+)/) || trimmedLine.match(/^\d+\)\s+(.+)/);
+        if (bulletMatch) {
+          currentItems.push(bulletMatch[1]);
+        }
+      }
+      // Regular text
+      else if (currentSection) {
+        currentItems.push(trimmedLine);
+      }
+      // Text before any section
+      else {
+        sections.push({ title: null, items: [trimmedLine] });
+      }
+    });
+    
+    // Add last section
+    if (currentSection) {
+      currentSection.items = currentItems;
+      sections.push(currentSection);
+    }
+    
+    return sections;
+  };
+
+  const formattedSections = insights ? formatInsights(insights.insights) : [];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" data-testid="ai-insights-modal">
@@ -46,15 +112,36 @@ export const AIInsightsModal = ({ isOpen, onClose, insights, loading }) => {
           </div>
         ) : insights ? (
           <div className="space-y-6">
-            {/* Main Insights */}
+            {/* Main Insights - Formatted */}
             <div className="bg-white/80 backdrop-blur-sm border border-[#E4E4E7] rounded-xl p-6" data-testid="ai-insights-content">
-              <h3 className="text-lg font-semibold text-[#09090B] font-['Outfit'] mb-4">
-                Recommendations
+              <h3 className="text-lg font-semibold text-[#09090B] font-['Outfit'] mb-6 flex items-center gap-2">
+                <CheckCircle size={24} weight="fill" className="text-[#059669]" />
+                Financial Analysis & Recommendations
               </h3>
-              <div className="prose prose-sm max-w-none">
-                <p className="text-[#09090B] font-['Manrope'] whitespace-pre-wrap leading-relaxed">
-                  {insights.insights}
-                </p>
+              
+              <div className="space-y-6">
+                {formattedSections.map((section, idx) => (
+                  <div key={idx} className="space-y-3">
+                    {section.title && (
+                      <h4 className="text-base font-semibold text-[#09090B] font-['Outfit'] flex items-start gap-2">
+                        <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-[#09090B] text-white text-xs font-bold flex-shrink-0 mt-0.5">
+                          {idx + 1}
+                        </span>
+                        {section.title}
+                      </h4>
+                    )}
+                    {section.items.length > 0 && (
+                      <div className="ml-8 space-y-2">
+                        {section.items.map((item, itemIdx) => (
+                          <div key={itemIdx} className="flex items-start gap-3 text-[#52525B] font-['Manrope'] leading-relaxed">
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#A1A1AA] flex-shrink-0 mt-2"></span>
+                            <p className="flex-1">{item}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
 
