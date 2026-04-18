@@ -18,16 +18,23 @@ export const Dashboard = () => {
   const [chatOpen, setChatOpen] = useState(false);
   const [alerts, setAlerts] = useState([]);
   const [forecast, setForecast] = useState(null);
+  const [healthScore, setHealthScore] = useState(null);
+  const [dailyLimit, setDailyLimit] = useState(null);
+  const [digest, setDigest] = useState(null);
 
   useEffect(() => { fetchAll(); }, []);
   const fetchAll = async () => {
     try {
-      const [dash, alertsRes, forecastRes] = await Promise.all([
+      const [dash, alertsRes, forecastRes, healthRes, dailyRes, digestRes] = await Promise.all([
         axios.get(`${API}/api/individual/dashboard`, { withCredentials: true }),
         axios.get(`${API}/api/alerts/individual`, { withCredentials: true }).catch(() => ({ data: [] })),
         axios.get(`${API}/api/forecast/individual`, { withCredentials: true }).catch(() => ({ data: null })),
+        axios.get(`${API}/api/health-score`, { withCredentials: true }).catch(() => ({ data: null })),
+        axios.get(`${API}/api/daily-limit`, { withCredentials: true }).catch(() => ({ data: null })),
+        axios.get(`${API}/api/weekly-digest`, { withCredentials: true }).catch(() => ({ data: null })),
       ]);
       setD(dash.data); setAlerts(alertsRes.data); setForecast(forecastRes.data);
+      setHealthScore(healthRes.data); setDailyLimit(dailyRes.data); setDigest(digestRes.data);
     } catch {} finally { setLoading(false); }
   };
 
@@ -172,6 +179,62 @@ export const Dashboard = () => {
                 })}
               </div>
             )}
+
+            {/* Health Score + Daily Limit row */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {healthScore && (
+                <div className="cashly-card p-5 flex items-center gap-5" data-testid="health-score">
+                  <div className="relative w-20 h-20 flex-shrink-0">
+                    <svg className="w-20 h-20 -rotate-90" viewBox="0 0 80 80">
+                      <circle cx="40" cy="40" r="34" fill="none" stroke="var(--border)" strokeWidth="6"/>
+                      <circle cx="40" cy="40" r="34" fill="none" stroke="var(--coral)" strokeWidth="6" strokeLinecap="round"
+                        strokeDasharray={`${(healthScore.score / 100) * 213.6} 213.6`} className="transition-all duration-1000"/>
+                    </svg>
+                    <div className="absolute inset-0 flex items-center justify-center"><span className="text-xl font-extrabold text-[var(--dark)]">{healthScore.score}</span></div>
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-[var(--dark)] mb-1">Financial Health</p>
+                    <p className="text-[10px] text-[var(--muted)] leading-relaxed">{healthScore.tips?.[0] || 'Keep up the good work!'}</p>
+                  </div>
+                </div>
+              )}
+              {dailyLimit && dailyLimit.limit > 0 && (
+                <div className="cashly-card p-5" data-testid="daily-limit">
+                  <p className="text-xs font-bold text-[var(--dark)] mb-2">Daily Spend Limit</p>
+                  <div className="flex items-baseline gap-2 mb-2">
+                    <span className="text-xl font-extrabold tabular-nums" style={{color: dailyLimit.percentage >= 100 ? 'var(--red)' : dailyLimit.percentage >= 80 ? '#F59E0B' : 'var(--green)'}}>{formatINR(dailyLimit.remaining)}</span>
+                    <span className="text-xs text-[var(--muted)]">remaining of {formatINR(dailyLimit.limit)}</span>
+                  </div>
+                  <div className="w-full h-2 bg-[var(--cream-light)] rounded-full overflow-hidden">
+                    <div className="h-full rounded-full transition-all" style={{width:`${Math.min(dailyLimit.percentage,100)}%`, background: dailyLimit.percentage >= 100 ? 'var(--red)' : dailyLimit.percentage >= 80 ? '#F59E0B' : 'var(--green)'}}/>
+                  </div>
+                  <p className="text-[10px] text-[var(--muted)] mt-1">Today: {formatINR(dailyLimit.spent_today)} spent</p>
+                </div>
+              )}
+            </div>
+
+            {/* Weekly Digest */}
+            {digest && digest.total_spent > 0 && (
+              <div className="cashly-card p-5" data-testid="weekly-digest">
+                <h3 className="text-sm font-bold text-[var(--dark)] mb-3">Weekly Digest</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+                  <div className="bg-[var(--cream-light)] rounded-xl p-2.5"><p className="text-[9px] text-[var(--muted)]">Spent</p><p className="text-sm font-bold text-[var(--coral)] tabular-nums">{formatINR(digest.total_spent)}</p></div>
+                  <div className="bg-[var(--cream-light)] rounded-xl p-2.5"><p className="text-[9px] text-[var(--muted)]">Saved</p><p className="text-sm font-bold text-[var(--green)] tabular-nums">{formatINR(digest.total_saved)}</p></div>
+                  <div className="bg-[var(--cream-light)] rounded-xl p-2.5"><p className="text-[9px] text-[var(--muted)]">Top Category</p><p className="text-sm font-bold text-[var(--dark)]">{digest.top_categories?.[0]?.name || '-'}</p></div>
+                  <div className="bg-[var(--cream-light)] rounded-xl p-2.5"><p className="text-[9px] text-[var(--muted)]">vs Last Week</p><p className="text-sm font-bold tabular-nums" style={{color:digest.vs_last_week<=0?'var(--green)':'var(--coral)'}}>{digest.vs_last_week>0?'+':''}{digest.vs_last_week}%</p></div>
+                </div>
+              </div>
+            )}
+
+            {/* Quick Access Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[{label:'Budgets',path:'/budgets',emoji:'📊'},{label:'Loans & EMI',path:'/loans',emoji:'🏦'},{label:'Credit Cards',path:'/credit-cards',emoji:'💳'},{label:'Pricing',path:'/pricing',emoji:'⭐'}].map(item=>(
+                <button key={item.label} onClick={()=>nav(item.path)} className="cashly-card p-4 text-center hover:border-[var(--coral)] border border-transparent transition-all" data-testid={`quick-${item.label.toLowerCase().replace(/\s/g,'-')}`}>
+                  <span className="text-2xl block mb-1">{item.emoji}</span>
+                  <p className="text-xs font-semibold text-[var(--dark)]">{item.label}</p>
+                </button>
+              ))}
+            </div>
           </>
         ) : <p className="text-center text-[var(--muted)] py-10">Welcome! Add your first transaction to get started.</p>}
       </main>

@@ -19,7 +19,10 @@ import bcrypt
 import jwt
 import csv
 import io
+import re
+import math
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionResponse, CheckoutStatusResponse, CheckoutSessionRequest
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -542,6 +545,415 @@ async def get_pricing():
         {"tier": "shop_owner", "name": "Shop Owner", "price": 299, "period": "month", "features": ["Cash ledger", "Sales tracking", "P&L reports", "GST summary", "UPI auto-detect", "Inventory basics"]},
         {"tier": "ca", "name": "Accountant (CA)", "price": 999, "period": "month", "features": ["Unlimited clients", "Full financial statements", "GST/TDS/ITR prep", "Client portal", "Bulk export", "Multi-currency"]},
     ]
+
+# ═══════════════════ BUDGETING ═══════════════════
+class BudgetCapBody(BaseModel):
+    category: str
+    limit: float
+    rollover: Optional[bool] = False
+
+@api.get("/budgets")
+async def get_budgets(u: dict = Depends(current_user)):
+    budgets = await db.budget_caps.find({"user_id": u["_id"]}, {"_id": 0}).to_list(100)
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    for b in budgets:
+        txns = await db.ind_transactions.find({"user_id": u["_id"], "type": "expense", "category": b["category"], "date": {"$regex": f"^{current_month}"}}).to_list(1000)
+        spent = sum(t["amount"] for t in txns)
+        b["spent"] = round(spent, 2)
+        b["remaining"] = round(b["limit"] - spent, 2)
+        b["percentage"] = round((spent / b["limit"]) * 100, 1) if b["limit"] > 0 else 0
+        b["status"] = "exceeded" if b["percentage"] >= 100 else "warning" if b["percentage"] >= 80 else "safe"
+    return budgets
+
+@api.post("/budgets")
+async def create_budget(body: BudgetCapBody, u: dict = Depends(current_user)):
+    existing = await db.budget_caps.find_one({"user_id": u["_id"], "category": body.category})
+    if existing:
+        await db.budget_caps.update_one({"user_id": u["_id"], "category": body.category}, {"$set": {"limit": body.limit, "rollover": body.rollover}})
+        return {"ok": True, "updated": True}
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], "category": body.category, "limit": body.limit, "rollover": body.rollover or False, "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.budget_caps.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.delete("/budgets/{bid}")
+async def delete_budget(bid: str, u: dict = Depends(current_user)):
+    await db.budget_caps.delete_one({"id": bid, "user_id": u["_id"]})
+    return {"ok": True}
+
+# ═══════════════════ AUTO-SAVE RULES ═══════════════════
+class AutoSaveRuleBody(BaseModel):
+    rule_type: str  # "roundup", "percentage", "fixed"
+    value: float  # roundup to nearest X, X% of income, fixed ₹ amount
+    target_goal_id: Optional[str] = ""
+    active: Optional[bool] = True
+
+@api.get("/autosave-rules")
+async def get_autosave_rules(u: dict = Depends(current_user)):
+    return await db.autosave_rules.find({"user_id": u["_id"]}, {"_id": 0}).to_list(50)
+
+@api.post("/autosave-rules")
+async def create_autosave_rule(body: AutoSaveRuleBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], "rule_type": body.rule_type, "value": body.value, "target_goal_id": body.target_goal_id or "", "active": body.active, "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.autosave_rules.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.delete("/autosave-rules/{rid}")
+async def delete_autosave_rule(rid: str, u: dict = Depends(current_user)):
+    await db.autosave_rules.delete_one({"id": rid, "user_id": u["_id"]})
+    return {"ok": True}
+
+# ═══════════════════ LOAN & EMI TRACKER ═══════════════════
+class LoanBody(BaseModel):
+    loan_type: str  # Home/Car/Personal/Education/Gold
+    principal: float
+    interest_rate: float
+    tenure_months: int
+    emi_amount: float
+    start_date: str
+    bank_name: Optional[str] = ""
+
+@api.get("/loans")
+async def get_loans(u: dict = Depends(current_user)):
+    loans = await db.loans.find({"user_id": u["_id"]}, {"_id": 0}).to_list(50)
+    for loan in loans:
+        # Calculate amortization summary
+        r = loan["interest_rate"] / 12 / 100
+        n = loan["tenure_months"]
+        emi = loan["emi_amount"]
+        start = datetime.strptime(loan["start_date"], "%Y-%m-%d")
+        months_elapsed = max(0, (datetime.now(timezone.utc).year - start.year) * 12 + datetime.now(timezone.utc).month - start.month)
+        emis_paid = min(months_elapsed, n)
+        total_paid = emi * emis_paid
+        # Approximate remaining principal
+        if r > 0:
+            total_interest = sum([(loan["principal"] * ((1 + r) ** i) - ((((1 + r) ** i) - 1) / r) * emi) * r for i in range(1, emis_paid + 1)]) if emis_paid > 0 else 0
+        else:
+            total_interest = 0
+        principal_paid = total_paid - total_interest
+        loan["emis_paid"] = emis_paid
+        loan["emis_total"] = n
+        loan["principal_remaining"] = round(max(0, loan["principal"] - principal_paid), 2)
+        loan["total_interest_paid"] = round(max(0, total_interest), 2)
+        loan["next_emi_date"] = (start + timedelta(days=30 * (emis_paid + 1))).strftime("%Y-%m-%d") if emis_paid < n else None
+    return loans
+
+@api.post("/loans")
+async def add_loan(body: LoanBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], **body.dict(), "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.loans.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.delete("/loans/{lid}")
+async def del_loan(lid: str, u: dict = Depends(current_user)):
+    await db.loans.delete_one({"id": lid, "user_id": u["_id"]})
+    return {"ok": True}
+
+@api.get("/loans/{lid}/amortization")
+async def loan_amortization(lid: str, u: dict = Depends(current_user)):
+    loan = await db.loans.find_one({"id": lid, "user_id": u["_id"]}, {"_id": 0})
+    if not loan: raise HTTPException(404, "Loan not found")
+    r = loan["interest_rate"] / 12 / 100
+    n = loan["tenure_months"]
+    emi = loan["emi_amount"]
+    balance = loan["principal"]
+    schedule = []
+    for i in range(1, n + 1):
+        interest = round(balance * r, 2) if r > 0 else 0
+        principal = round(emi - interest, 2)
+        balance = round(max(0, balance - principal), 2)
+        schedule.append({"month": i, "emi": emi, "principal": principal, "interest": interest, "balance": balance})
+    return schedule
+
+@api.post("/loans/{lid}/prepay-simulate")
+async def prepay_simulate(lid: str, request: Request, u: dict = Depends(current_user)):
+    body = await request.json()
+    extra = body.get("amount", 0)
+    loan = await db.loans.find_one({"id": lid, "user_id": u["_id"]}, {"_id": 0})
+    if not loan: raise HTTPException(404, "Loan not found")
+    r = loan["interest_rate"] / 12 / 100
+    emi = loan["emi_amount"]
+    # Without prepayment
+    n_orig = loan["tenure_months"]
+    total_orig = emi * n_orig
+    # With prepayment (reduce balance)
+    balance = loan["principal"] - extra
+    months = 0
+    total_new = extra
+    while balance > 0 and months < 600:
+        interest = balance * r if r > 0 else 0
+        principal = emi - interest
+        if principal <= 0: break
+        balance -= principal
+        total_new += emi
+        months += 1
+    return {"months_saved": max(0, n_orig - months), "interest_saved": round(max(0, total_orig - total_new), 2), "new_tenure": months}
+
+# ═══════════════════ CREDIT CARD MANAGER ═══════════════════
+class CreditCardBody(BaseModel):
+    bank: str
+    card_name: str
+    credit_limit: float
+    statement_date: int  # day of month
+    due_date: int
+    outstanding: Optional[float] = 0
+    reward_points: Optional[int] = 0
+
+@api.get("/credit-cards")
+async def get_credit_cards(u: dict = Depends(current_user)):
+    cards = await db.credit_cards.find({"user_id": u["_id"]}, {"_id": 0}).to_list(20)
+    total_limit = sum(c["credit_limit"] for c in cards)
+    total_outstanding = sum(c.get("outstanding", 0) for c in cards)
+    utilization = round((total_outstanding / total_limit) * 100, 1) if total_limit > 0 else 0
+    for c in cards:
+        c["utilization"] = round((c.get("outstanding", 0) / c["credit_limit"]) * 100, 1) if c["credit_limit"] > 0 else 0
+        c["available"] = round(c["credit_limit"] - c.get("outstanding", 0), 2)
+    return {"cards": cards, "total_utilization": utilization, "total_limit": total_limit, "total_outstanding": total_outstanding}
+
+@api.post("/credit-cards")
+async def add_credit_card(body: CreditCardBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], **body.dict(), "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.credit_cards.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.delete("/credit-cards/{cid}")
+async def del_credit_card(cid: str, u: dict = Depends(current_user)):
+    await db.credit_cards.delete_one({"id": cid, "user_id": u["_id"]})
+    return {"ok": True}
+
+# ═══════════════════ FINANCIAL HEALTH SCORE ═══════════════════
+@api.get("/health-score")
+async def get_health_score(u: dict = Depends(current_user)):
+    txns = await db.ind_transactions.find({"user_id": u["_id"]}, {"_id": 0}).to_list(10000)
+    goals = await db.ind_goals.find({"user_id": u["_id"]}, {"_id": 0}).to_list(100)
+    loans = await db.loans.find({"user_id": u["_id"]}, {"_id": 0}).to_list(50)
+    budgets = await db.budget_caps.find({"user_id": u["_id"]}, {"_id": 0}).to_list(100)
+    
+    inc = sum(t["amount"] for t in txns if t["type"] == "income")
+    exp = sum(t["amount"] for t in txns if t["type"] == "expense")
+    
+    # Savings rate (25 pts)
+    savings_rate = (inc - exp) / inc if inc > 0 else 0
+    sr_score = min(25, int(savings_rate * 100))
+    
+    # Debt-to-income (25 pts)
+    monthly_emi = sum(l.get("emi_amount", 0) for l in loans)
+    monthly_inc = inc / max(len(set(t["date"][:7] for t in txns if t["type"] == "income")), 1)
+    dti = monthly_emi / monthly_inc if monthly_inc > 0 else 0
+    dti_score = max(0, 25 - int(dti * 50))
+    
+    # Emergency fund (20 pts)
+    monthly_exp = exp / max(len(set(t["date"][:7] for t in txns if t["type"] == "expense")), 1)
+    emergency_goals = [g for g in goals if 'emergency' in g.get("name", "").lower()]
+    ef_saved = sum(g.get("saved", 0) for g in emergency_goals)
+    ef_months = ef_saved / monthly_exp if monthly_exp > 0 else 0
+    ef_score = min(20, int(ef_months * 3.33))
+    
+    # Budget adherence (15 pts)
+    if budgets:
+        current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+        adherent = 0
+        for b in budgets:
+            spent = sum(t["amount"] for t in txns if t["type"] == "expense" and t["category"] == b["category"] and t["date"].startswith(current_month))
+            if spent <= b["limit"]: adherent += 1
+        ba_score = int((adherent / len(budgets)) * 15)
+    else:
+        ba_score = 8
+    
+    # Investment consistency (15 pts)
+    inv_score = min(15, len(goals) * 3)
+    
+    total = sr_score + dti_score + ef_score + ba_score + inv_score
+    
+    tips = []
+    if savings_rate < 0.2: tips.append("Aim to save at least 20% of your income each month.")
+    if dti > 0.4: tips.append("Your debt-to-income ratio is high. Focus on reducing EMI burden.")
+    if ef_months < 3: tips.append("Build your emergency fund to cover at least 3 months of expenses.")
+    if not tips: tips.append("Great financial health! Keep up your disciplined approach.")
+    
+    return {"score": min(100, total), "breakdown": {"savings_rate": sr_score, "debt_to_income": dti_score, "emergency_fund": ef_score, "budget_adherence": ba_score, "investment_consistency": inv_score}, "tips": tips[:3]}
+
+# ═══════════════════ DAILY SPEND LIMIT ═══════════════════
+@api.get("/daily-limit")
+async def get_daily_limit(u: dict = Depends(current_user)):
+    config = await db.daily_limits.find_one({"user_id": u["_id"]}, {"_id": 0})
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    txns = await db.ind_transactions.find({"user_id": u["_id"], "type": "expense", "date": today}).to_list(100)
+    spent_today = sum(t["amount"] for t in txns)
+    limit = config.get("limit", 0) if config else 0
+    return {"limit": limit, "spent_today": round(spent_today, 2), "remaining": round(max(0, limit - spent_today), 2), "percentage": round((spent_today / limit) * 100, 1) if limit > 0 else 0}
+
+@api.post("/daily-limit")
+async def set_daily_limit(request: Request, u: dict = Depends(current_user)):
+    body = await request.json()
+    limit = body.get("limit", 0)
+    await db.daily_limits.update_one({"user_id": u["_id"]}, {"$set": {"limit": limit}}, upsert=True)
+    return {"ok": True}
+
+# ═══════════════════ WEEKLY DIGEST ═══════════════════
+@api.get("/weekly-digest")
+async def get_weekly_digest(u: dict = Depends(current_user)):
+    today = datetime.now(timezone.utc)
+    week_ago = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+    two_weeks_ago = (today - timedelta(days=14)).strftime("%Y-%m-%d")
+    today_str = today.strftime("%Y-%m-%d")
+    
+    this_week = await db.ind_transactions.find({"user_id": u["_id"], "date": {"$gte": week_ago, "$lte": today_str}}).to_list(1000)
+    last_week = await db.ind_transactions.find({"user_id": u["_id"], "date": {"$gte": two_weeks_ago, "$lt": week_ago}}).to_list(1000)
+    
+    tw_spent = sum(t["amount"] for t in this_week if t["type"] == "expense")
+    lw_spent = sum(t["amount"] for t in last_week if t["type"] == "expense")
+    tw_saved = sum(t["amount"] for t in this_week if t["type"] == "income") - tw_spent
+    
+    cats = defaultdict(float)
+    for t in this_week:
+        if t["type"] == "expense": cats[t["category"]] += t["amount"]
+    top3 = sorted(cats.items(), key=lambda x: -x[1])[:3]
+    biggest = max(this_week, key=lambda t: t["amount"]) if this_week else None
+    
+    change = round(((tw_spent - lw_spent) / lw_spent) * 100, 1) if lw_spent > 0 else 0
+    
+    return {
+        "total_spent": round(tw_spent, 2), "total_saved": round(tw_saved, 2),
+        "top_categories": [{"name": c, "amount": round(a, 2)} for c, a in top3],
+        "biggest_transaction": {"category": biggest["category"], "amount": biggest["amount"], "date": biggest["date"]} if biggest else None,
+        "vs_last_week": change,
+        "comparison": "better" if tw_spent < lw_spent else "worse" if tw_spent > lw_spent else "same"
+    }
+
+# ═══════════════════ SUBSCRIPTION DETECTOR ═══════════════════
+@api.get("/subscriptions")
+async def detect_subscriptions(u: dict = Depends(current_user)):
+    txns = await db.ind_transactions.find({"user_id": u["_id"], "type": "expense"}, {"_id": 0}).sort("date", -1).to_list(10000)
+    # Find recurring charges (same category + similar amount appearing monthly)
+    recurring = defaultdict(list)
+    for t in txns:
+        key = f"{t['category']}_{t.get('description', '')}"
+        recurring[key].append(t)
+    
+    subs = []
+    for key, entries in recurring.items():
+        if len(entries) >= 2:
+            amounts = [e["amount"] for e in entries]
+            avg = sum(amounts) / len(amounts)
+            if all(abs(a - avg) < avg * 0.15 for a in amounts):  # within 15% variance
+                subs.append({
+                    "name": entries[0].get("description") or entries[0]["category"],
+                    "category": entries[0]["category"],
+                    "amount": round(avg, 2),
+                    "frequency": "monthly",
+                    "annual_cost": round(avg * 12, 2),
+                    "last_charged": entries[0]["date"],
+                    "occurrences": len(entries)
+                })
+    
+    total_monthly = sum(s["amount"] for s in subs)
+    return {"subscriptions": subs, "total_monthly": round(total_monthly, 2), "total_annual": round(total_monthly * 12, 2)}
+
+# ═══════════════════ STRIPE PAYMENTS ═══════════════════
+PLANS = {
+    "pro_monthly": {"name": "Pro Monthly", "amount": 9.99, "currency": "usd", "interval": "month"},
+    "pro_yearly": {"name": "Pro Yearly", "amount": 95.99, "currency": "usd", "interval": "year"},
+    "elite_monthly": {"name": "Elite Monthly", "amount": 19.99, "currency": "usd", "interval": "month"},
+    "elite_yearly": {"name": "Elite Yearly", "amount": 191.99, "currency": "usd", "interval": "year"},
+}
+
+@api.post("/payments/checkout")
+async def create_checkout(request: Request, u: dict = Depends(current_user)):
+    body = await request.json()
+    plan_id = body.get("plan_id")
+    origin_url = body.get("origin_url", "")
+    
+    if plan_id not in PLANS:
+        raise HTTPException(400, "Invalid plan")
+    
+    plan = PLANS[plan_id]
+    success_url = f"{origin_url}/payment-success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin_url}/pricing"
+    
+    api_key = os.environ.get("STRIPE_API_KEY")
+    host_url = str(request.base_url)
+    webhook_url = f"{host_url}api/webhook/stripe"
+    
+    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=webhook_url)
+    
+    checkout_req = CheckoutSessionRequest(
+        amount=float(plan["amount"]),
+        currency=plan["currency"],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={"user_id": u["_id"], "plan_id": plan_id, "user_email": u.get("email", "")}
+    )
+    
+    session = await stripe_checkout.create_checkout_session(checkout_req)
+    
+    # Store payment transaction
+    await db.payment_transactions.insert_one({
+        "session_id": session.session_id,
+        "user_id": u["_id"],
+        "plan_id": plan_id,
+        "amount": plan["amount"],
+        "currency": plan["currency"],
+        "payment_status": "initiated",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {"url": session.url, "session_id": session.session_id}
+
+@api.get("/payments/status/{session_id}")
+async def payment_status(session_id: str, u: dict = Depends(current_user)):
+    api_key = os.environ.get("STRIPE_API_KEY")
+    host_url = "https://example.com"
+    webhook_url = f"{host_url}/api/webhook/stripe"
+    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=webhook_url)
+    
+    status = await stripe_checkout.get_checkout_status(session_id)
+    
+    # Update payment record
+    tx = await db.payment_transactions.find_one({"session_id": session_id})
+    if tx and tx.get("payment_status") != "paid":
+        new_status = "paid" if status.payment_status == "paid" else status.payment_status
+        await db.payment_transactions.update_one(
+            {"session_id": session_id},
+            {"$set": {"payment_status": new_status, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        # If paid, upgrade user
+        if new_status == "paid":
+            plan_id = tx.get("plan_id", "")
+            plan_tier = "pro" if "pro" in plan_id else "elite" if "elite" in plan_id else "free"
+            await db.users.update_one({"_id": ObjectId(tx["user_id"])}, {"$set": {"plan": plan_tier, "plan_id": plan_id}})
+    
+    return {"status": status.status, "payment_status": status.payment_status, "amount": status.amount_total, "currency": status.currency}
+
+@api.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    body = await request.body()
+    sig = request.headers.get("Stripe-Signature", "")
+    api_key = os.environ.get("STRIPE_API_KEY")
+    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url="")
+    try:
+        event = await stripe_checkout.handle_webhook(body, sig)
+        if event.payment_status == "paid":
+            tx = await db.payment_transactions.find_one({"session_id": event.session_id})
+            if tx and tx.get("payment_status") != "paid":
+                await db.payment_transactions.update_one({"session_id": event.session_id}, {"$set": {"payment_status": "paid"}})
+                plan_id = event.metadata.get("plan_id", "")
+                plan_tier = "pro" if "pro" in plan_id else "elite" if "elite" in plan_id else "free"
+                user_id = event.metadata.get("user_id", "")
+                if user_id:
+                    await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"plan": plan_tier}})
+        return {"ok": True}
+    except Exception as e:
+        logging.error(f"Webhook error: {e}")
+        return {"ok": False}
+
+@api.get("/user/plan")
+async def get_user_plan(u: dict = Depends(current_user)):
+    return {"plan": u.get("plan", "free")}
+
 
 # ═══════════════════ STARTUP ═══════════════════
 @app.on_event("startup")
