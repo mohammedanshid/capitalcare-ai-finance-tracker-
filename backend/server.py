@@ -10,1061 +10,383 @@ from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import logging
-from pydantic import BaseModel, Field, ConfigDict, EmailStr
+from pydantic import BaseModel, EmailStr
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 from bson import ObjectId
+from collections import defaultdict
 import bcrypt
 import jwt
-import secrets
-from emergentintegrations.llm.chat import LlmChat, UserMessage
 import csv
 import io
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
+from emergentintegrations.llm.chat import LlmChat, UserMessage
 
-# MongoDB connection
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# JWT Configuration
-JWT_SECRET = os.environ.get('JWT_SECRET', 'default-secret-change-me')
+JWT_SECRET = os.environ.get('JWT_SECRET', 'default-secret')
 JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 15
-REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-# Create the main app
 app = FastAPI()
+api = APIRouter(prefix="/api")
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+# ═══════════════════ AUTH UTILS ═══════════════════
+def hash_pw(pw): return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
+def verify_pw(pw, h): return bcrypt.checkpw(pw.encode(), h.encode())
+def make_token(uid, email, ttype="access", mins=15):
+    return jwt.encode({"sub": uid, "email": email, "exp": datetime.now(timezone.utc) + timedelta(minutes=mins), "type": ttype}, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-# ============== AUTH UTILITIES ==============
-
-def hash_password(password: str) -> str:
-    salt = bcrypt.gensalt()
-    hashed = bcrypt.hashpw(password.encode("utf-8"), salt)
-    return hashed.decode("utf-8")
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
-
-def create_access_token(user_id: str, email: str) -> str:
-    payload = {
-        "sub": user_id,
-        "email": email,
-        "exp": datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
-        "type": "access"
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-def create_refresh_token(user_id: str) -> str:
-    payload = {
-        "sub": user_id,
-        "exp": datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
-        "type": "refresh"
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-async def get_current_user(request: Request) -> dict:
+async def current_user(request: Request) -> dict:
     token = request.cookies.get("access_token")
     if not token:
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        ah = request.headers.get("Authorization", "")
+        if ah.startswith("Bearer "): token = ah[7:]
+    if not token: raise HTTPException(401, "Not authenticated")
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        if payload.get("type") != "access":
-            raise HTTPException(status_code=401, detail="Invalid token type")
-        user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
-        if not user:
-            raise HTTPException(status_code=401, detail="User not found")
-        user["id"] = str(user["_id"])
-        user.pop("_id", None)
-        user.pop("password_hash", None)
-        return user
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Authentication error: {str(e)}")
+        p = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if p.get("type") != "access": raise HTTPException(401, "Bad token")
+        u = await db.users.find_one({"_id": ObjectId(p["sub"])})
+        if not u: raise HTTPException(401, "User not found")
+        u["_id"] = str(u["_id"]); u.pop("password_hash", None)
+        return u
+    except jwt.ExpiredSignatureError: raise HTTPException(401, "Token expired")
+    except jwt.InvalidTokenError: raise HTTPException(401, "Invalid token")
 
-# ============== MODELS ==============
+def set_cookies(response, uid, email):
+    at = make_token(uid, email, "access", 60)
+    rt = make_token(uid, email, "refresh", 10080)
+    for k, v, m in [("access_token", at, 3600), ("refresh_token", rt, 604800)]:
+        response.set_cookie(key=k, value=v, httponly=True, secure=False, samesite="lax", max_age=m, path="/")
 
-class UserRegister(BaseModel):
-    name: str
-    email: EmailStr
-    password: str
+# ═══════════════════ AUTH ENDPOINTS ═══════════════════
+class RegBody(BaseModel):
+    name: str; email: EmailStr; password: str
+class LoginBody(BaseModel):
+    email: EmailStr; password: str
 
-class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
+@api.post("/auth/register")
+async def register(body: RegBody, response: Response):
+    em = body.email.lower()
+    if await db.users.find_one({"email": em}): raise HTTPException(400, "Email taken")
+    doc = {"name": body.name, "email": em, "password_hash": hash_pw(body.password), "persona": None, "created_at": datetime.now(timezone.utc)}
+    r = await db.users.insert_one(doc)
+    uid = str(r.inserted_id)
+    set_cookies(response, uid, em)
+    return {"id": uid, "name": body.name, "email": em, "persona": None}
 
-class UserResponse(BaseModel):
-    id: str
-    name: str
-    email: str
-    created_at: str
+@api.post("/auth/login")
+async def login(body: LoginBody, response: Response):
+    em = body.email.lower()
+    u = await db.users.find_one({"email": em})
+    if not u or not verify_pw(body.password, u["password_hash"]): raise HTTPException(401, "Invalid credentials")
+    uid = str(u["_id"])
+    set_cookies(response, uid, em)
+    return {"id": uid, "name": u["name"], "email": em, "persona": u.get("persona")}
 
-class TransactionCreate(BaseModel):
-    type: str  # "income" or "expense"
-    amount: float
-    category: str
-    description: Optional[str] = ""
-    date: str
+@api.post("/auth/logout")
+async def logout(response: Response):
+    response.delete_cookie("access_token", path="/"); response.delete_cookie("refresh_token", path="/")
+    return {"ok": True}
 
-class TransactionResponse(BaseModel):
-    id: str
-    user_id: str
-    type: str
-    amount: float
-    category: str
-    description: str
-    date: str
-    created_at: str
+@api.get("/auth/me")
+async def me(u: dict = Depends(current_user)):
+    return u
 
-class DashboardSummary(BaseModel):
-    total_income: float
-    total_expenses: float
-    balance: float
-    transaction_count: int
+# ═══════════════════ PERSONA ═══════════════════
+@api.post("/persona/select")
+async def select_persona(request: Request, u: dict = Depends(current_user)):
+    body = await request.json()
+    persona = body.get("persona")
+    if persona not in ["individual", "shop_owner", "ca"]: raise HTTPException(400, "Invalid persona")
+    await db.users.update_one({"_id": ObjectId(u["_id"])}, {"$set": {"persona": persona}})
+    return {"persona": persona}
 
-class AnalyzeRequest(BaseModel):
-    transactions: List[Dict[str, Any]]
+# ═══════════════════ INDIVIDUAL ENDPOINTS ═══════════════════
+class TransBody(BaseModel):
+    amount: float; category: str; type: str; description: Optional[str] = ""; date: str
 
-class AnalyzeResponse(BaseModel):
-    insights: str
-    raw_reasoning: str
-    created_at: str
-
-# ============== AUTH ENDPOINTS ==============
-
-@api_router.post("/auth/register")
-async def register(user: UserRegister, response: Response):
-    email_lower = user.email.lower()
-    existing = await db.users.find_one({"email": email_lower})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    hashed = hash_password(user.password)
-    user_doc = {
-        "name": user.name,
-        "email": email_lower,
-        "password_hash": hashed,
-        "created_at": datetime.now(timezone.utc)
-    }
-    
-    result = await db.users.insert_one(user_doc)
-    user_id = str(result.inserted_id)
-    
-    access_token = create_access_token(user_id, email_lower)
-    refresh_token = create_refresh_token(user_id)
-    
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        secure=False,
-        samesite="lax",
-        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        path="/"
-    )
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        secure=False,
-        samesite="lax",
-        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-        path="/"
-    )
-    
+@api.get("/individual/dashboard")
+async def ind_dashboard(u: dict = Depends(current_user)):
+    txns = await db.ind_transactions.find({"user_id": u["_id"]}, {"_id": 0}).to_list(10000)
+    goals = await db.ind_goals.find({"user_id": u["_id"]}, {"_id": 0}).to_list(100)
+    inc = sum(t["amount"] for t in txns if t["type"] == "income")
+    exp = sum(t["amount"] for t in txns if t["type"] == "expense")
+    savings_rate = round((inc - exp) / inc * 100, 1) if inc > 0 else 0
+    # Monthly sparklines
+    monthly = defaultdict(lambda: {"income": 0, "expense": 0})
+    for t in txns:
+        monthly[t["date"][:7]][t["type"]] += t["amount"]
+    months = sorted(monthly.keys())[-6:]
+    spark_inc = [monthly[m]["income"] for m in months]
+    spark_exp = [monthly[m]["expense"] for m in months]
+    # Category breakdown
+    cats = defaultdict(float)
+    for t in txns:
+        if t["type"] == "expense": cats[t["category"]] += t["amount"]
+    cat_breakdown = [{"name": k, "value": round(v, 2)} for k, v in sorted(cats.items(), key=lambda x: -x[1])]
+    # Monthly series
+    series = [{"month": m, "income": round(monthly[m]["income"], 2), "expenses": round(monthly[m]["expense"], 2)} for m in months]
     return {
-        "id": user_id,
-        "name": user.name,
-        "email": email_lower,
-        "created_at": user_doc["created_at"].isoformat()
+        "income": round(inc, 2), "expenses": round(exp, 2), "savings_rate": savings_rate,
+        "net_worth": round(inc - exp, 2),
+        "sparkline_income": spark_inc, "sparkline_expenses": spark_exp,
+        "category_breakdown": cat_breakdown, "monthly_series": series,
+        "goals": goals, "transaction_count": len(txns)
     }
 
-@api_router.post("/auth/login")
-async def login(credentials: UserLogin, response: Response, request: Request):
-    email_lower = credentials.email.lower()
-    
-    # Check brute force protection
-    ip = request.client.host
-    identifier = f"{ip}:{email_lower}"
-    attempts = await db.login_attempts.find_one({"identifier": identifier})
-    
-    if attempts and attempts.get("count", 0) >= 5:
-        lockout_until = attempts.get("lockout_until")
-        if lockout_until and lockout_until > datetime.now(timezone.utc):
-            raise HTTPException(status_code=429, detail="Too many failed attempts. Try again later.")
-    
-    user = await db.users.find_one({"email": email_lower})
-    if not user or not verify_password(credentials.password, user["password_hash"]):
-        # Increment failed attempts
-        await db.login_attempts.update_one(
-            {"identifier": identifier},
-            {
-                "$inc": {"count": 1},
-                "$set": {
-                    "lockout_until": datetime.now(timezone.utc) + timedelta(minutes=15),
-                    "updated_at": datetime.now(timezone.utc)
-                }
-            },
-            upsert=True
-        )
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    # Clear failed attempts on successful login
-    await db.login_attempts.delete_one({"identifier": identifier})
-    
-    user_id = str(user["_id"])
-    access_token = create_access_token(user_id, email_lower)
-    refresh_token = create_refresh_token(user_id)
-    
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        secure=False,
-        samesite="lax",
-        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        path="/"
-    )
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        secure=False,
-        samesite="lax",
-        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-        path="/"
-    )
-    
-    return {
-        "id": user_id,
-        "name": user["name"],
-        "email": email_lower,
-        "created_at": user["created_at"].isoformat()
-    }
+@api.get("/individual/transactions")
+async def ind_get_txns(u: dict = Depends(current_user)):
+    return await db.ind_transactions.find({"user_id": u["_id"]}, {"_id": 0}).sort("date", -1).to_list(1000)
 
-@api_router.post("/auth/logout")
-async def logout(response: Response, user: dict = Depends(get_current_user)):
-    response.delete_cookie(key="access_token", path="/")
-    response.delete_cookie(key="refresh_token", path="/")
-    return {"message": "Logged out successfully"}
+@api.post("/individual/transactions")
+async def ind_add_txn(body: TransBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], "amount": body.amount, "category": body.category, "type": body.type, "description": body.description or "", "date": body.date, "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.ind_transactions.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
 
-@api_router.get("/auth/me")
-async def get_me(user: dict = Depends(get_current_user)):
-    return user
+@api.delete("/individual/transactions/{tid}")
+async def ind_del_txn(tid: str, u: dict = Depends(current_user)):
+    r = await db.ind_transactions.delete_one({"id": tid, "user_id": u["_id"]})
+    if r.deleted_count == 0: raise HTTPException(404, "Not found")
+    return {"ok": True}
 
-@api_router.post("/auth/refresh")
-async def refresh(request: Request, response: Response):
-    token = request.cookies.get("refresh_token")
-    if not token:
-        raise HTTPException(status_code=401, detail="Refresh token missing")
-    
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        if payload.get("type") != "refresh":
-            raise HTTPException(status_code=401, detail="Invalid token type")
-        
-        user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
-        if not user:
-            raise HTTPException(status_code=401, detail="User not found")
-        
-        user_id = str(user["_id"])
-        access_token = create_access_token(user_id, user["email"])
-        
-        response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=True,
-            secure=False,
-            samesite="lax",
-            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-            path="/"
-        )
-        
-        return {"message": "Token refreshed"}
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Refresh token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+# Goals
+class GoalBody(BaseModel):
+    name: str; target: float; saved: Optional[float] = 0; deadline: Optional[str] = ""
 
-# ============== FINANCE ENDPOINTS ==============
+@api.get("/individual/goals")
+async def ind_get_goals(u: dict = Depends(current_user)):
+    return await db.ind_goals.find({"user_id": u["_id"]}, {"_id": 0}).to_list(100)
 
-@api_router.post("/transactions")
-async def create_transaction(transaction: TransactionCreate, user: dict = Depends(get_current_user)):
-    if transaction.type not in ["income", "expense"]:
-        raise HTTPException(status_code=400, detail="Type must be 'income' or 'expense'")
-    
-    if transaction.amount <= 0:
-        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
-    
-    trans_doc = {
-        "user_id": user["id"],
-        "type": transaction.type,
-        "amount": transaction.amount,
-        "category": transaction.category,
-        "description": transaction.description or "",
-        "date": transaction.date,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    
-    result = await db.transactions.insert_one(trans_doc)
-    trans_doc["id"] = str(result.inserted_id)
-    trans_doc.pop("_id", None)
-    
-    return trans_doc
+@api.post("/individual/goals")
+async def ind_add_goal(body: GoalBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], "name": body.name, "target": body.target, "saved": body.saved or 0, "deadline": body.deadline or "", "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.ind_goals.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
 
-@api_router.get("/transactions")
-async def get_transactions(user: dict = Depends(get_current_user)):
-    transactions = await db.transactions.find(
-        {"user_id": user["id"]},
-        {"_id": 0}
-    ).sort("date", -1).to_list(1000)
-    
-    # Add id field from stored data
-    for trans in transactions:
-        if "id" not in trans and "_id" in trans:
-            trans["id"] = str(trans["_id"])
-    
-    return transactions
+@api.put("/individual/goals/{gid}")
+async def ind_update_goal(gid: str, body: GoalBody, u: dict = Depends(current_user)):
+    await db.ind_goals.update_one({"id": gid, "user_id": u["_id"]}, {"$set": {"name": body.name, "target": body.target, "saved": body.saved, "deadline": body.deadline}})
+    return {"ok": True}
 
-@api_router.delete("/transactions/{transaction_id}")
-async def delete_transaction(transaction_id: str, user: dict = Depends(get_current_user)):
-    # Try to delete by MongoDB _id first, then by custom id field
-    try:
-        # Try as MongoDB ObjectId
-        result = await db.transactions.delete_one({"_id": ObjectId(transaction_id), "user_id": user["id"]})
-        if result.deleted_count == 0:
-            # Try as custom id field
-            result = await db.transactions.delete_one({"id": transaction_id, "user_id": user["id"]})
-    except:
-        # If ObjectId conversion fails, try as custom id field
-        result = await db.transactions.delete_one({"id": transaction_id, "user_id": user["id"]})
-    
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Transaction not found")
-    return {"message": "Transaction deleted"}
+@api.delete("/individual/goals/{gid}")
+async def ind_del_goal(gid: str, u: dict = Depends(current_user)):
+    await db.ind_goals.delete_one({"id": gid, "user_id": u["_id"]})
+    return {"ok": True}
 
-@api_router.get("/dashboard/summary")
-async def get_summary(user: dict = Depends(get_current_user)):
-    transactions = await db.transactions.find({"user_id": user["id"]}).to_list(10000)
-    
-    total_income = sum(t["amount"] for t in transactions if t["type"] == "income")
-    total_expenses = sum(t["amount"] for t in transactions if t["type"] == "expense")
-    balance = total_income - total_expenses
-    
-    # Build monthly data for sparklines (last 6 months)
-    from collections import defaultdict
-    monthly = defaultdict(lambda: {"income": 0, "expenses": 0})
-    for t in transactions:
-        month_key = t["date"][:7]  # "YYYY-MM"
-        if t["type"] == "income":
-            monthly[month_key]["income"] += t["amount"]
-        else:
-            monthly[month_key]["expenses"] += t["amount"]
-    
-    sorted_months = sorted(monthly.keys())[-6:]
-    sparkline_income = [round(monthly[m]["income"], 2) for m in sorted_months]
-    sparkline_expenses = [round(monthly[m]["expenses"], 2) for m in sorted_months]
-    sparkline_profit = [round(monthly[m]["income"] - monthly[m]["expenses"], 2) for m in sorted_months]
-    sparkline_cashflow = sparkline_profit  # alias
-    
-    # Trends (compare last two months)
-    def calc_trend(values):
-        if len(values) < 2 or values[-2] == 0:
-            return 0
-        return round(((values[-1] - values[-2]) / abs(values[-2])) * 100, 1)
-    
-    # Current month cash flow
-    now_month = datetime.now(timezone.utc).strftime("%Y-%m")
-    current_income = monthly[now_month]["income"]
-    current_expenses = monthly[now_month]["expenses"]
-    cash_flow = round(current_income - current_expenses, 2)
-    
-    # Monthly breakdown for line chart
-    monthly_series = []
-    for m in sorted_months:
-        monthly_series.append({
-            "month": m,
-            "income": round(monthly[m]["income"], 2),
-            "expenses": round(monthly[m]["expenses"], 2),
-            "profit": round(monthly[m]["income"] - monthly[m]["expenses"], 2),
-        })
-    
-    return {
-        "total_income": round(total_income, 2),
-        "total_expenses": round(total_expenses, 2),
-        "balance": round(balance, 2),
-        "cash_flow": cash_flow,
-        "transaction_count": len(transactions),
-        "sparkline_income": sparkline_income,
-        "sparkline_expenses": sparkline_expenses,
-        "sparkline_profit": sparkline_profit,
-        "sparkline_cashflow": sparkline_cashflow,
-        "trend_income": calc_trend(sparkline_income),
-        "trend_expenses": calc_trend(sparkline_expenses),
-        "trend_profit": calc_trend(sparkline_profit),
-        "trend_cashflow": calc_trend(sparkline_cashflow),
-        "monthly_series": monthly_series,
-    }
+# ═══════════════════ SHOP OWNER ENDPOINTS ═══════════════════
+class LedgerBody(BaseModel):
+    amount: float; category: str; note: Optional[str] = ""; entry_type: str  # "credit" or "debit"
 
-@api_router.post("/analyze")
-async def analyze_finances(user: dict = Depends(get_current_user)):
-    # Get all user transactions
-    transactions = await db.transactions.find({"user_id": user["id"]}).to_list(10000)
-    
-    if not transactions:
-        raise HTTPException(status_code=400, detail="No transactions found. Add some transactions first.")
-    
-    # Prepare data for AI
-    trans_summary = []
-    for t in transactions:
-        trans_summary.append({
-            "type": t["type"],
-            "amount": t["amount"],
-            "category": t["category"],
-            "date": t["date"],
-            "description": t.get("description", "")
-        })
-    
-    # Calculate basic stats
-    total_income = sum(t["amount"] for t in transactions if t["type"] == "income")
-    total_expenses = sum(t["amount"] for t in transactions if t["type"] == "expense")
-    
-    # Group expenses by category
-    expense_by_category = {}
-    for t in transactions:
-        if t["type"] == "expense":
-            cat = t["category"]
-            expense_by_category[cat] = expense_by_category.get(cat, 0) + t["amount"]
-    
-    # Prepare prompt for AI
-    prompt = f"""You are a professional financial advisor. Analyze the following financial data and provide actionable insights.
-
-User's Financial Summary:
-- Total Income: ${total_income:.2f}
-- Total Expenses: ${total_expenses:.2f}
-- Net Balance: ${total_income - total_expenses:.2f}
-- Number of Transactions: {len(transactions)}
-
-Expenses by Category:
-{chr(10).join([f"- {cat}: ${amt:.2f}" for cat, amt in sorted(expense_by_category.items(), key=lambda x: x[1], reverse=True)])}
-
-Recent Transactions:
-{chr(10).join([f"- {t['date']}: {t['type'].title()} ${t['amount']:.2f} ({t['category']}) - {t.get('description', 'No description')}" for t in transactions[-20:]])}
-
-Please analyze this data and provide insights in TWO sections:
-
-SECTION 1 - REASONING:
-Your detailed internal analysis and thought process (this will be hidden by default).
-
-SECTION 2 - INSIGHTS:
-Provide clear, well-structured recommendations using this EXACT format:
-
-1. Spending behavior analysis
-- Key observation 1
-- Key observation 2
-- Key observation 3
-
-2. Overspending patterns (if any)
-- Pattern 1 with specific details
-- Pattern 2 with specific details
-
-3. Money leaks or wasteful spending
-- Leak 1 with recommendation
-- Leak 2 with recommendation
-
-4. Budget optimization suggestions
-- Suggestion 1 with specific numbers
-- Suggestion 2 with specific numbers
-- Suggestion 3 with specific numbers
-
-5. Savings recommendations
-- Recommendation 1 with actionable steps
-- Recommendation 2 with actionable steps
-- Recommendation 3 with actionable steps
-
-6. Action items for better financial health
-- Action 1 (specific and measurable)
-- Action 2 (specific and measurable)
-- Action 3 (specific and measurable)
-
-IMPORTANT: Use bullet points (-) for all items. Be specific with numbers and percentages. Keep each bullet point concise (1-2 sentences max).
-
-Format your complete response as:
-
-REASONING:
-[Your detailed analysis here]
-
-INSIGHTS:
-[Your structured recommendations here following the exact format above]
-"""
-    
-    try:
-        # Use emergentintegrations to call OpenAI GPT-5.2
-        api_key = os.environ.get('EMERGENT_LLM_KEY')
-        chat = LlmChat(
-            api_key=api_key,
-            session_id=f"finance_analysis_{user['id']}_{datetime.now(timezone.utc).timestamp()}",
-            system_message="You are a professional financial advisor providing clear, actionable financial insights."
-        )
-        chat.with_model("openai", "gpt-5.2")
-        
-        user_message = UserMessage(text=prompt)
-        ai_response = await chat.send_message(user_message)
-        
-        # Parse response to extract reasoning and insights
-        response_text = ai_response.strip()
-        
-        reasoning = ""
-        insights = ""
-        
-        if "REASONING:" in response_text and "INSIGHTS:" in response_text:
-            parts = response_text.split("INSIGHTS:")
-            reasoning = parts[0].replace("REASONING:", "").strip()
-            insights = parts[1].strip()
-        else:
-            # If format not followed, use entire response as insights
-            insights = response_text
-            reasoning = "AI provided direct recommendations without detailed reasoning."
-        
-        # Store analysis in database
-        analysis_doc = {
-            "user_id": user["id"],
-            "insights": insights,
-            "raw_reasoning": reasoning,
-            "transaction_count": len(transactions),
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-        
-        await db.ai_analyses.insert_one(analysis_doc)
-        
-        return {
-            "insights": insights,
-            "raw_reasoning": reasoning,
-            "created_at": analysis_doc["created_at"]
-        }
-        
-    except Exception as e:
-        logging.error(f"AI analysis error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to analyze finances: {str(e)}")
-
-
-@api_router.get("/analyze/latest")
-async def get_latest_analysis(user: dict = Depends(get_current_user)):
-    """Get the most recent AI analysis for the sidebar panel"""
-    analysis = await db.ai_analyses.find(
-        {"user_id": user["id"]},
-        {"_id": 0}
-    ).sort("created_at", -1).limit(1).to_list(1)
-    
-    if not analysis:
-        return {"has_analysis": False}
-    
-    return {
-        "has_analysis": True,
-        "insights": analysis[0].get("insights", ""),
-        "created_at": analysis[0].get("created_at", ""),
-    }
-
-
-# ============== CATEGORIES MANAGEMENT ==============
-
-class CategoryCreate(BaseModel):
-    name: str
-    type: str  # "income" or "expense"
-    icon: Optional[str] = ""
-
-class CategoryResponse(BaseModel):
-    id: str
-    user_id: str
-    name: str
-    type: str
-    icon: str
-    is_default: bool
-    created_at: str
-
-@api_router.get("/categories")
-async def get_categories(user: dict = Depends(get_current_user)):
-    # Get default categories
-    default_categories = [
-        {"name": "Salary", "type": "income", "icon": "💼", "is_default": True},
-        {"name": "Freelance", "type": "income", "icon": "💻", "is_default": True},
-        {"name": "Investment", "type": "income", "icon": "📈", "is_default": True},
-        {"name": "Gift", "type": "income", "icon": "🎁", "is_default": True},
-        {"name": "Other Income", "type": "income", "icon": "💰", "is_default": True},
-        {"name": "Food", "type": "expense", "icon": "🍔", "is_default": True},
-        {"name": "Transport", "type": "expense", "icon": "🚗", "is_default": True},
-        {"name": "Shopping", "type": "expense", "icon": "🛍️", "is_default": True},
-        {"name": "Bills", "type": "expense", "icon": "📄", "is_default": True},
-        {"name": "Entertainment", "type": "expense", "icon": "🎬", "is_default": True},
-        {"name": "Healthcare", "type": "expense", "icon": "🏥", "is_default": True},
-        {"name": "Education", "type": "expense", "icon": "📚", "is_default": True},
-        {"name": "Other Expense", "type": "expense", "icon": "💸", "is_default": True},
-    ]
-    
-    # Get custom categories
-    custom_categories = await db.categories.find({"user_id": user["id"]}, {"_id": 0}).to_list(100)
-    for cat in custom_categories:
-        cat["is_default"] = False
-    
-    return default_categories + custom_categories
-
-@api_router.post("/categories")
-async def create_category(category: CategoryCreate, user: dict = Depends(get_current_user)):
-    if category.type not in ["income", "expense"]:
-        raise HTTPException(status_code=400, detail="Type must be 'income' or 'expense'")
-    
-    cat_doc = {
-        "id": str(ObjectId()),
-        "user_id": user["id"],
-        "name": category.name,
-        "type": category.type,
-        "icon": category.icon or "📌",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await db.categories.insert_one(cat_doc)
-    cat_doc["is_default"] = False
-    cat_doc.pop("_id", None)
-    return cat_doc
-
-@api_router.delete("/categories/{category_id}")
-async def delete_category(category_id: str, user: dict = Depends(get_current_user)):
-    result = await db.categories.delete_one({"id": category_id, "user_id": user["id"]})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Category not found")
-    return {"message": "Category deleted"}
-
-# ============== BUDGET MANAGEMENT ==============
-
-class BudgetCreate(BaseModel):
-    category: str
-    limit: float
-    period: str = "monthly"  # monthly, weekly, yearly
-
-class BudgetResponse(BaseModel):
-    id: str
-    user_id: str
-    category: str
-    limit: float
-    spent: float
-    period: str
-    percentage: float
-    status: str  # "safe", "warning", "exceeded"
-    created_at: str
-
-@api_router.get("/budgets")
-async def get_budgets(user: dict = Depends(get_current_user)):
-    budgets = await db.budgets.find({"user_id": user["id"]}, {"_id": 0}).to_list(100)
-    
-    # Calculate spent amounts for each budget
-    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
-    
-    for budget in budgets:
-        # Get transactions for this category in current period
-        transactions = await db.transactions.find({
-            "user_id": user["id"],
-            "type": "expense",
-            "category": budget["category"],
-            "date": {"$regex": f"^{current_month}"}
-        }).to_list(1000)
-        
-        spent = sum(t["amount"] for t in transactions)
-        budget["spent"] = round(spent, 2)
-        budget["percentage"] = round((spent / budget["limit"]) * 100, 1) if budget["limit"] > 0 else 0
-        
-        if budget["percentage"] >= 100:
-            budget["status"] = "exceeded"
-        elif budget["percentage"] >= 80:
-            budget["status"] = "warning"
-        else:
-            budget["status"] = "safe"
-    
-    return budgets
-
-@api_router.post("/budgets")
-async def create_budget(budget: BudgetCreate, user: dict = Depends(get_current_user)):
-    if budget.limit <= 0:
-        raise HTTPException(status_code=400, detail="Budget limit must be greater than 0")
-    
-    # Check if budget already exists for this category
-    existing = await db.budgets.find_one({"user_id": user["id"], "category": budget.category})
-    if existing:
-        raise HTTPException(status_code=400, detail="Budget already exists for this category")
-    
-    budget_doc = {
-        "id": str(ObjectId()),
-        "user_id": user["id"],
-        "category": budget.category,
-        "limit": budget.limit,
-        "period": budget.period,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await db.budgets.insert_one(budget_doc)
-    budget_doc.pop("_id", None)
-    budget_doc["spent"] = 0
-    budget_doc["percentage"] = 0
-    budget_doc["status"] = "safe"
-    return budget_doc
-
-@api_router.put("/budgets/{budget_id}")
-async def update_budget(budget_id: str, budget: BudgetCreate, user: dict = Depends(get_current_user)):
-    result = await db.budgets.update_one(
-        {"id": budget_id, "user_id": user["id"]},
-        {"$set": {"limit": budget.limit, "period": budget.period}}
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Budget not found")
-    return {"message": "Budget updated"}
-
-@api_router.delete("/budgets/{budget_id}")
-async def delete_budget(budget_id: str, user: dict = Depends(get_current_user)):
-    result = await db.budgets.delete_one({"id": budget_id, "user_id": user["id"]})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Budget not found")
-    return {"message": "Budget deleted"}
-
-# ============== RECURRING TRANSACTIONS ==============
-
-class RecurringTransactionCreate(BaseModel):
-    type: str  # "income" or "expense"
-    amount: float
-    category: str
-    description: Optional[str] = ""
-    frequency: str  # "daily", "weekly", "monthly", "yearly"
-    start_date: str
-    end_date: Optional[str] = None
-
-class RecurringTransactionResponse(BaseModel):
-    id: str
-    user_id: str
-    type: str
-    amount: float
-    category: str
-    description: str
-    frequency: str
-    start_date: str
-    end_date: Optional[str]
-    next_occurrence: str
-    is_active: bool
-    created_at: str
-
-@api_router.get("/recurring-transactions")
-async def get_recurring_transactions(user: dict = Depends(get_current_user)):
-    recurring = await db.recurring_transactions.find({"user_id": user["id"]}, {"_id": 0}).to_list(100)
-    return recurring
-
-@api_router.post("/recurring-transactions")
-async def create_recurring_transaction(recurring: RecurringTransactionCreate, user: dict = Depends(get_current_user)):
-    if recurring.type not in ["income", "expense"]:
-        raise HTTPException(status_code=400, detail="Type must be 'income' or 'expense'")
-    
-    if recurring.amount <= 0:
-        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
-    
-    if recurring.frequency not in ["daily", "weekly", "monthly", "yearly"]:
-        raise HTTPException(status_code=400, detail="Invalid frequency")
-    
-    recurring_doc = {
-        "id": str(ObjectId()),
-        "user_id": user["id"],
-        "type": recurring.type,
-        "amount": recurring.amount,
-        "category": recurring.category,
-        "description": recurring.description or "",
-        "frequency": recurring.frequency,
-        "start_date": recurring.start_date,
-        "end_date": recurring.end_date,
-        "next_occurrence": recurring.start_date,
-        "is_active": True,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await db.recurring_transactions.insert_one(recurring_doc)
-    recurring_doc.pop("_id", None)
-    return recurring_doc
-
-@api_router.delete("/recurring-transactions/{recurring_id}")
-async def delete_recurring_transaction(recurring_id: str, user: dict = Depends(get_current_user)):
-    result = await db.recurring_transactions.delete_one({"id": recurring_id, "user_id": user["id"]})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Recurring transaction not found")
-    return {"message": "Recurring transaction deleted"}
-
-@api_router.post("/recurring-transactions/process")
-async def process_recurring_transactions(user: dict = Depends(get_current_user)):
-    """Manually trigger processing of recurring transactions"""
+@api.get("/shop/dashboard")
+async def shop_dashboard(u: dict = Depends(current_user)):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    recurring_list = await db.recurring_transactions.find({
-        "user_id": user["id"],
-        "is_active": True,
-        "next_occurrence": {"$lte": today}
-    }).to_list(100)
-    
-    created_count = 0
-    for recurring in recurring_list:
-        # Create transaction
-        trans_doc = {
-            "user_id": user["id"],
-            "type": recurring["type"],
-            "amount": recurring["amount"],
-            "category": recurring["category"],
-            "description": f"{recurring['description']} (Recurring)",
-            "date": recurring["next_occurrence"],
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "id": str(ObjectId())
-        }
-        await db.transactions.insert_one(trans_doc)
-        created_count += 1
-        
-        # Calculate next occurrence
-        next_date = datetime.fromisoformat(recurring["next_occurrence"])
-        if recurring["frequency"] == "daily":
-            next_date += timedelta(days=1)
-        elif recurring["frequency"] == "weekly":
-            next_date += timedelta(weeks=1)
-        elif recurring["frequency"] == "monthly":
-            # Add one month
-            if next_date.month == 12:
-                next_date = next_date.replace(year=next_date.year + 1, month=1)
-            else:
-                next_date = next_date.replace(month=next_date.month + 1)
-        elif recurring["frequency"] == "yearly":
-            next_date = next_date.replace(year=next_date.year + 1)
-        
-        # Update next occurrence
-        await db.recurring_transactions.update_one(
-            {"id": recurring["id"]},
-            {"$set": {"next_occurrence": next_date.strftime("%Y-%m-%d")}}
-        )
-    
-    return {"message": f"Processed {created_count} recurring transactions"}
+    entries = await db.shop_ledger.find({"user_id": u["_id"]}, {"_id": 0}).sort("created_at", -1).to_list(10000)
+    today_entries = [e for e in entries if e.get("date") == today]
+    # Opening balance: sum of all entries before today
+    past_entries = [e for e in entries if e.get("date", "") < today]
+    opening = sum(e["amount"] if e["entry_type"] == "credit" else -e["amount"] for e in past_entries)
+    today_credit = sum(e["amount"] for e in today_entries if e["entry_type"] == "credit")
+    today_debit = sum(e["amount"] for e in today_entries if e["entry_type"] == "debit")
+    closing = opening + today_credit - today_debit
+    # Pending payments
+    pending = await db.shop_pending.find({"user_id": u["_id"]}, {"_id": 0}).to_list(100)
+    # Weekly data
+    weekly = defaultdict(lambda: {"credit": 0, "debit": 0})
+    for e in entries:
+        d = e.get("date", "")
+        weekly[d]["credit" if e["entry_type"] == "credit" else "debit"] += e["amount"]
+    last7 = sorted(weekly.keys())[-7:]
+    weekly_series = [{"date": d, "credit": round(weekly[d]["credit"], 2), "debit": round(weekly[d]["debit"], 2), "net": round(weekly[d]["credit"] - weekly[d]["debit"], 2)} for d in last7]
+    # Category breakdown
+    cats = defaultdict(float)
+    for e in today_entries:
+        if e["entry_type"] == "credit": cats[e["category"]] += e["amount"]
+    top5 = sorted(cats.items(), key=lambda x: -x[1])[:5]
+    return {
+        "today": today, "opening_balance": round(opening, 2),
+        "today_credit": round(today_credit, 2), "today_debit": round(today_debit, 2),
+        "closing_balance": round(closing, 2),
+        "today_entries": today_entries, "pending_payments": pending,
+        "weekly_series": weekly_series,
+        "top_categories": [{"name": k, "value": round(v, 2)} for k, v in top5],
+        "total_revenue": round(sum(e["amount"] for e in entries if e["entry_type"] == "credit"), 2),
+    }
 
-# ============== EXPORT FUNCTIONALITY ==============
+@api.post("/shop/entry")
+async def shop_add_entry(body: LedgerBody, u: dict = Depends(current_user)):
+    if body.entry_type not in ["credit", "debit"]: raise HTTPException(400, "Must be credit or debit")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc).strftime("%H:%M")
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], "amount": body.amount, "category": body.category, "note": body.note or "", "entry_type": body.entry_type, "date": today, "time": now, "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.shop_ledger.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
 
-@api_router.get("/export/csv")
-async def export_csv(user: dict = Depends(get_current_user)):
-    transactions = await db.transactions.find({"user_id": user["id"]}).sort("date", -1).to_list(10000)
-    
-    # Create CSV in memory
-    output = io.StringIO()
-    writer = csv.writer(output)
-    
-    # Write header
-    writer.writerow(["Date", "Type", "Category", "Amount", "Description"])
-    
-    # Write data
-    for trans in transactions:
-        writer.writerow([
-            trans["date"],
-            trans["type"].title(),
-            trans["category"],
-            f"${trans['amount']:.2f}",
-            trans.get("description", "")
-        ])
-    
-    # Create response
-    output.seek(0)
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=transactions_{datetime.now().strftime('%Y%m%d')}.csv"}
-    )
+@api.delete("/shop/entry/{eid}")
+async def shop_del_entry(eid: str, u: dict = Depends(current_user)):
+    r = await db.shop_ledger.delete_one({"id": eid, "user_id": u["_id"]})
+    if r.deleted_count == 0: raise HTTPException(404, "Not found")
+    return {"ok": True}
 
-@api_router.get("/export/pdf")
-async def export_pdf(user: dict = Depends(get_current_user)):
-    transactions = await db.transactions.find({"user_id": user["id"]}).sort("date", -1).to_list(10000)
-    summary = await db.transactions.aggregate([
-        {"$match": {"user_id": user["id"]}},
-        {"$group": {
-            "_id": "$type",
-            "total": {"$sum": "$amount"}
-        }}
-    ]).to_list(10)
-    
-    # Calculate totals
-    total_income = sum(s["total"] for s in summary if s["_id"] == "income")
-    total_expenses = sum(s["total"] for s in summary if s["_id"] == "expense")
-    balance = total_income - total_expenses
-    
-    # Create PDF in memory
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter)
-    elements = []
-    
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        'CustomTitle',
-        parent=styles['Heading1'],
-        fontSize=24,
-        textColor=colors.HexColor('#09090B'),
-        spaceAfter=30,
-    )
-    
-    # Title
-    elements.append(Paragraph("Financial Report", title_style))
-    elements.append(Paragraph(f"Generated on {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
-    elements.append(Spacer(1, 0.3*inch))
-    
-    # Summary table
-    summary_data = [
-        ["Summary", "Amount"],
-        ["Total Income", f"${total_income:.2f}"],
-        ["Total Expenses", f"${total_expenses:.2f}"],
-        ["Balance", f"${balance:.2f}"]
+@api.get("/shop/ledger")
+async def shop_get_ledger(u: dict = Depends(current_user)):
+    return await db.shop_ledger.find({"user_id": u["_id"]}, {"_id": 0}).sort("created_at", -1).to_list(5000)
+
+# Pending payments
+class PendingBody(BaseModel):
+    name: str; amount: float; days_overdue: Optional[int] = 0
+
+@api.get("/shop/pending")
+async def shop_get_pending(u: dict = Depends(current_user)):
+    return await db.shop_pending.find({"user_id": u["_id"]}, {"_id": 0}).to_list(100)
+
+@api.post("/shop/pending")
+async def shop_add_pending(body: PendingBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], "name": body.name, "amount": body.amount, "days_overdue": body.days_overdue, "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.shop_pending.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.delete("/shop/pending/{pid}")
+async def shop_del_pending(pid: str, u: dict = Depends(current_user)):
+    await db.shop_pending.delete_one({"id": pid, "user_id": u["_id"]})
+    return {"ok": True}
+
+# ═══════════════════ CA ENDPOINTS ═══════════════════
+class ClientBody(BaseModel):
+    name: str; business_type: str; status: Optional[str] = "on_track"; next_deadline: Optional[str] = ""
+
+@api.get("/ca/dashboard")
+async def ca_dashboard(u: dict = Depends(current_user)):
+    clients = await db.ca_clients.find({"user_id": u["_id"]}, {"_id": 0}).to_list(500)
+    tasks = await db.ca_tasks.find({"user_id": u["_id"]}, {"_id": 0}).to_list(1000)
+    overdue = len([t for t in tasks if t.get("status") == "overdue"])
+    pending = len([t for t in tasks if t.get("status") == "pending"])
+    return {"clients": clients, "tasks": tasks, "active_clients": len(clients), "overdue_tasks": overdue, "pending_tasks": pending, "reports_due": overdue}
+
+@api.get("/ca/clients")
+async def ca_get_clients(u: dict = Depends(current_user)):
+    return await db.ca_clients.find({"user_id": u["_id"]}, {"_id": 0}).to_list(500)
+
+@api.post("/ca/clients")
+async def ca_add_client(body: ClientBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], "name": body.name, "business_type": body.business_type, "status": body.status, "next_deadline": body.next_deadline, "revenue_trend": [0, 0, 0], "last_activity": datetime.now(timezone.utc).isoformat(), "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.ca_clients.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.delete("/ca/clients/{cid}")
+async def ca_del_client(cid: str, u: dict = Depends(current_user)):
+    await db.ca_clients.delete_one({"id": cid, "user_id": u["_id"]})
+    return {"ok": True}
+
+class TaskBody(BaseModel):
+    title: str; client_name: Optional[str] = ""; deadline: Optional[str] = ""; status: Optional[str] = "pending"
+
+@api.get("/ca/tasks")
+async def ca_get_tasks(u: dict = Depends(current_user)):
+    return await db.ca_tasks.find({"user_id": u["_id"]}, {"_id": 0}).to_list(1000)
+
+@api.post("/ca/tasks")
+async def ca_add_task(body: TaskBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], "title": body.title, "client_name": body.client_name, "deadline": body.deadline, "status": body.status or "pending", "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.ca_tasks.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.put("/ca/tasks/{tid}")
+async def ca_update_task(tid: str, body: TaskBody, u: dict = Depends(current_user)):
+    await db.ca_tasks.update_one({"id": tid, "user_id": u["_id"]}, {"$set": {"title": body.title, "client_name": body.client_name, "deadline": body.deadline, "status": body.status}})
+    return {"ok": True}
+
+@api.delete("/ca/tasks/{tid}")
+async def ca_del_task(tid: str, u: dict = Depends(current_user)):
+    await db.ca_tasks.delete_one({"id": tid, "user_id": u["_id"]})
+    return {"ok": True}
+
+# ═══════════════════ AI ENDPOINTS ═══════════════════
+@api.post("/ai/insights")
+async def ai_insights(request: Request, u: dict = Depends(current_user)):
+    body = await request.json()
+    persona = body.get("persona", "individual")
+    context = body.get("context", "")
+    prompts = {
+        "individual": f"You are a friendly personal finance advisor for an Indian user. Analyze:\n{context}\nProvide 5 actionable tips in bullet points. Be encouraging. Use INR amounts.",
+        "shop_owner": f"You are a sharp business advisor for an Indian shop owner. Analyze:\n{context}\nProvide 5 tactical recommendations to increase revenue and reduce costs. Use INR amounts.",
+        "ca": f"You are an expert Indian Chartered Accountant advisor. Analyze:\n{context}\nProvide 5 professional recommendations on compliance, tax optimization, and client management."
+    }
+    try:
+        chat = LlmChat(api_key=os.environ.get('EMERGENT_LLM_KEY'), session_id=f"finflow_{u['_id']}_{datetime.now(timezone.utc).timestamp()}", system_message="You are a professional Indian financial advisor.")
+        chat.with_model("openai", "gpt-5.2")
+        resp = await chat.send_message(UserMessage(text=prompts.get(persona, prompts["individual"])))
+        # Store
+        await db.ai_insights.insert_one({"user_id": u["_id"], "persona": persona, "insights": resp.strip(), "created_at": datetime.now(timezone.utc).isoformat()})
+        return {"insights": resp.strip()}
+    except Exception as e:
+        raise HTTPException(500, f"AI error: {str(e)}")
+
+@api.get("/ai/latest")
+async def ai_latest(u: dict = Depends(current_user)):
+    doc = await db.ai_insights.find({"user_id": u["_id"]}, {"_id": 0}).sort("created_at", -1).limit(1).to_list(1)
+    if not doc: return {"has_insights": False}
+    return {"has_insights": True, "insights": doc[0]["insights"], "created_at": doc[0]["created_at"]}
+
+# ═══════════════════ SMS PARSER ═══════════════════
+@api.post("/sms/parse")
+async def parse_sms(request: Request):
+    body = await request.json()
+    sms_text = body.get("text", "")
+    if not sms_text: raise HTTPException(400, "No SMS text")
+    # Simple regex-based parser for Indian bank SMS
+    import re
+    result = {"amount": None, "type": None, "merchant": None, "parsed": False}
+    # Patterns: "debited" / "credited" / "spent" / "received"
+    amt_match = re.search(r'(?:Rs\.?|INR|₹)\s*([\d,]+\.?\d*)', sms_text, re.IGNORECASE)
+    if amt_match:
+        result["amount"] = float(amt_match.group(1).replace(",", ""))
+        result["parsed"] = True
+    if re.search(r'debit|spent|paid|purchase|withdrawn', sms_text, re.IGNORECASE):
+        result["type"] = "debit"
+    elif re.search(r'credit|received|refund|deposit', sms_text, re.IGNORECASE):
+        result["type"] = "credit"
+    # Merchant
+    merchant_match = re.search(r'(?:at|to|from|by)\s+([A-Za-z0-9\s]+?)(?:\s+on|\s+ref|\s+UPI|\.|$)', sms_text, re.IGNORECASE)
+    if merchant_match: result["merchant"] = merchant_match.group(1).strip()
+    return result
+
+# ═══════════════════ PRICING ═══════════════════
+@api.get("/pricing")
+async def get_pricing():
+    return [
+        {"tier": "individual", "name": "Individual", "price": 99, "period": "month", "features": ["Expense tracking", "Savings goals", "AI insights", "Monthly reports", "Bank SMS parsing"]},
+        {"tier": "shop_owner", "name": "Shop Owner", "price": 299, "period": "month", "features": ["Cash ledger", "Sales tracking", "P&L reports", "GST summary", "UPI auto-detect", "Inventory basics"]},
+        {"tier": "ca", "name": "Accountant (CA)", "price": 999, "period": "month", "features": ["Unlimited clients", "Full financial statements", "GST/TDS/ITR prep", "Client portal", "Bulk export", "Multi-currency"]},
     ]
-    
-    summary_table = Table(summary_data, colWidths=[3*inch, 2*inch])
-    summary_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#09090B')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 14),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black)
-    ]))
-    
-    elements.append(summary_table)
-    elements.append(Spacer(1, 0.5*inch))
-    
-    # Transactions table
-    elements.append(Paragraph("Transactions", styles['Heading2']))
-    elements.append(Spacer(1, 0.2*inch))
-    
-    trans_data = [["Date", "Type", "Category", "Amount", "Description"]]
-    for trans in transactions[:50]:  # Limit to 50 for PDF
-        trans_data.append([
-            trans["date"],
-            trans["type"].title(),
-            trans["category"],
-            f"${trans['amount']:.2f}",
-            (trans.get("description", ""))[:30]
-        ])
-    
-    trans_table = Table(trans_data, colWidths=[1.2*inch, 0.8*inch, 1.2*inch, 1*inch, 2*inch])
-    trans_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#09090B')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
-    ]))
-    
-    elements.append(trans_table)
-    
-    # Build PDF
-    doc.build(elements)
-    buffer.seek(0)
-    
-    return StreamingResponse(
-        buffer,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=financial_report_{datetime.now().strftime('%Y%m%d')}.pdf"}
-    )
 
-# ============== STARTUP EVENTS ==============
-
+# ═══════════════════ STARTUP ═══════════════════
 @app.on_event("startup")
-async def startup_event():
-    # Create indexes
+async def startup():
     await db.users.create_index("email", unique=True)
-    await db.login_attempts.create_index("identifier")
-    await db.transactions.create_index([("user_id", 1), ("date", -1)])
-    await db.categories.create_index([("user_id", 1), ("name", 1)])
-    await db.budgets.create_index([("user_id", 1), ("category", 1)])
-    await db.recurring_transactions.create_index([("user_id", 1), ("next_occurrence", 1)])
-    
-    # Seed admin user
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@financeapp.com")
-    admin_password = os.environ.get("ADMIN_PASSWORD", "Admin@123")
-    
-    existing_admin = await db.users.find_one({"email": admin_email})
-    if existing_admin is None:
-        hashed = hash_password(admin_password)
-        await db.users.insert_one({
-            "email": admin_email,
-            "password_hash": hashed,
-            "name": "Admin User",
-            "role": "admin",
-            "created_at": datetime.now(timezone.utc)
-        })
-        logging.info(f"Admin user created: {admin_email}")
-    elif not verify_password(admin_password, existing_admin["password_hash"]):
-        await db.users.update_one(
-            {"email": admin_email},
-            {"$set": {"password_hash": hash_password(admin_password)}}
-        )
-        logging.info(f"Admin password updated: {admin_email}")
-    
-    # Write test credentials
-    test_creds_path = Path("/app/memory")
-    test_creds_path.mkdir(exist_ok=True)
-    with open(test_creds_path / "test_credentials.md", "w") as f:
-        f.write(f"""# Test Credentials for Finance App
+    await db.ind_transactions.create_index([("user_id", 1), ("date", -1)])
+    await db.shop_ledger.create_index([("user_id", 1), ("date", -1)])
+    await db.ca_clients.create_index("user_id")
+    await db.ca_tasks.create_index("user_id")
+    # Seed admin
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@finflow.com")
+    admin_pw = os.environ.get("ADMIN_PASSWORD", "Admin@123")
+    if not await db.users.find_one({"email": admin_email}):
+        await db.users.insert_one({"email": admin_email, "password_hash": hash_pw(admin_pw), "name": "Admin", "persona": None, "created_at": datetime.now(timezone.utc)})
+    # Write creds
+    Path("/app/memory").mkdir(exist_ok=True)
+    Path("/app/memory/test_credentials.md").write_text(f"# FinFlow Credentials\n- Email: {admin_email}\n- Password: {admin_pw}\n- Endpoints: /api/auth/login, /api/auth/register, /api/persona/select\n")
 
-## Admin Account
-- Email: {admin_email}
-- Password: {admin_password}
-- Role: admin
-
-## Test User Account
-- Email: testuser@example.com
-- Password: Test@123
-- Role: user
-
-## Auth Endpoints
-- POST /api/auth/register
-- POST /api/auth/login
-- POST /api/auth/logout
-- GET /api/auth/me
-- POST /api/auth/refresh
-
-## Finance Endpoints
-- POST /api/transactions
-- GET /api/transactions
-- DELETE /api/transactions/{{id}}
-- GET /api/dashboard/summary
-- POST /api/analyze
-""")
-
-# Include the router in the main app
-app.include_router(api_router)
-
-# CORS Configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+app.include_router(api)
+app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+logging.basicConfig(level=logging.INFO)
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+async def shutdown(): client.close()
