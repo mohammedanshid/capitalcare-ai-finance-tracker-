@@ -955,6 +955,646 @@ async def get_user_plan(u: dict = Depends(current_user)):
     return {"plan": u.get("plan", "free")}
 
 
+# ═══════════════════ PHASE 2: INVESTMENTS ═══════════════════
+class InvestmentBody(BaseModel):
+    asset_type: str  # stock, mutual_fund, gold, fd, rd, crypto
+    name: str  # ticker/fund name/metal type
+    quantity: float
+    buy_price: float  # per unit
+    current_price: Optional[float] = 0  # per unit
+    purchase_date: str
+    notes: Optional[str] = ""
+
+@api.get("/investments")
+async def get_investments(u: dict = Depends(current_user)):
+    items = await db.investments.find({"user_id": u["_id"]}, {"_id": 0}).to_list(500)
+    for it in items:
+        buy_total = it["quantity"] * it["buy_price"]
+        cur_total = it["quantity"] * (it.get("current_price") or it["buy_price"])
+        gain = cur_total - buy_total
+        it["invested"] = round(buy_total, 2)
+        it["current_value"] = round(cur_total, 2)
+        it["gain_loss"] = round(gain, 2)
+        it["gain_pct"] = round((gain / buy_total) * 100, 2) if buy_total > 0 else 0
+    invested = sum(i["invested"] for i in items)
+    cur_value = sum(i["current_value"] for i in items)
+    # Allocation by asset type
+    alloc = defaultdict(float)
+    for i in items:
+        alloc[i["asset_type"]] += i["current_value"]
+    allocation = [{"asset_type": k, "value": round(v, 2), "pct": round((v/cur_value)*100, 1) if cur_value>0 else 0} for k, v in alloc.items()]
+    return {
+        "items": items,
+        "total_invested": round(invested, 2),
+        "total_current": round(cur_value, 2),
+        "total_gain": round(cur_value - invested, 2),
+        "gain_pct": round(((cur_value - invested) / invested) * 100, 2) if invested > 0 else 0,
+        "allocation": allocation,
+    }
+
+@api.post("/investments")
+async def add_investment(body: InvestmentBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], **body.dict(), "created_at": datetime.now(timezone.utc).isoformat()}
+    if not doc.get("current_price"): doc["current_price"] = doc["buy_price"]
+    await db.investments.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.patch("/investments/{iid}")
+async def update_investment(iid: str, request: Request, u: dict = Depends(current_user)):
+    body = await request.json()
+    updatable = {k: v for k, v in body.items() if k in {"quantity", "buy_price", "current_price", "name", "notes"}}
+    if not updatable: raise HTTPException(400, "Nothing to update")
+    await db.investments.update_one({"id": iid, "user_id": u["_id"]}, {"$set": updatable})
+    return {"ok": True}
+
+@api.delete("/investments/{iid}")
+async def del_investment(iid: str, u: dict = Depends(current_user)):
+    await db.investments.delete_one({"id": iid, "user_id": u["_id"]})
+    return {"ok": True}
+
+# ═══════════════════ PHASE 2: REAL ESTATE ═══════════════════
+class RealEstateBody(BaseModel):
+    name: str
+    property_type: str  # apartment, house, plot, commercial
+    purchase_price: float
+    current_value: float
+    purchase_date: str
+    location: Optional[str] = ""
+    notes: Optional[str] = ""
+
+@api.get("/real-estate")
+async def get_real_estate(u: dict = Depends(current_user)):
+    items = await db.real_estate.find({"user_id": u["_id"]}, {"_id": 0}).to_list(100)
+    for it in items:
+        gain = it["current_value"] - it["purchase_price"]
+        it["appreciation"] = round(gain, 2)
+        it["appreciation_pct"] = round((gain / it["purchase_price"]) * 100, 2) if it["purchase_price"] > 0 else 0
+    total_value = sum(i["current_value"] for i in items)
+    total_cost = sum(i["purchase_price"] for i in items)
+    return {
+        "items": items,
+        "total_value": round(total_value, 2),
+        "total_cost": round(total_cost, 2),
+        "total_appreciation": round(total_value - total_cost, 2),
+        "appreciation_pct": round(((total_value - total_cost) / total_cost) * 100, 2) if total_cost > 0 else 0,
+    }
+
+@api.post("/real-estate")
+async def add_real_estate(body: RealEstateBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], **body.dict(), "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.real_estate.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.delete("/real-estate/{rid}")
+async def del_real_estate(rid: str, u: dict = Depends(current_user)):
+    await db.real_estate.delete_one({"id": rid, "user_id": u["_id"]})
+    return {"ok": True}
+
+# ═══════════════════ PHASE 2: NET WORTH ═══════════════════
+@api.get("/net-worth")
+async def get_net_worth(u: dict = Depends(current_user)):
+    # Assets
+    txns = await db.ind_transactions.find({"user_id": u["_id"]}, {"_id": 0}).to_list(20000)
+    inc = sum(t["amount"] for t in txns if t["type"] == "income")
+    exp = sum(t["amount"] for t in txns if t["type"] == "expense")
+    cash_balance = round(inc - exp, 2)
+
+    goals = await db.ind_goals.find({"user_id": u["_id"]}, {"_id": 0}).to_list(100)
+    goal_savings = sum(g.get("saved", 0) for g in goals)
+
+    inv_items = await db.investments.find({"user_id": u["_id"]}, {"_id": 0}).to_list(500)
+    inv_value = sum((i["quantity"] * (i.get("current_price") or i["buy_price"])) for i in inv_items)
+
+    re_items = await db.real_estate.find({"user_id": u["_id"]}, {"_id": 0}).to_list(100)
+    re_value = sum(r["current_value"] for r in re_items)
+
+    # Liabilities
+    loans = await db.loans.find({"user_id": u["_id"]}, {"_id": 0}).to_list(50)
+    total_loan_outstanding = 0
+    for loan in loans:
+        r = loan["interest_rate"] / 12 / 100
+        n = loan["tenure_months"]
+        emi = loan["emi_amount"]
+        start = datetime.strptime(loan["start_date"], "%Y-%m-%d")
+        months_elapsed = max(0, (datetime.now(timezone.utc).year - start.year) * 12 + datetime.now(timezone.utc).month - start.month)
+        emis_paid = min(months_elapsed, n)
+        balance = loan["principal"]
+        for _ in range(emis_paid):
+            interest = balance * r if r > 0 else 0
+            principal = emi - interest
+            balance = max(0, balance - principal)
+        total_loan_outstanding += balance
+
+    cards = await db.credit_cards.find({"user_id": u["_id"]}, {"_id": 0}).to_list(20)
+    total_cc_outstanding = sum(c.get("outstanding", 0) for c in cards)
+
+    borrowed = await db.lend_borrow.find({"user_id": u["_id"], "direction": "borrowed", "status": {"$ne": "settled"}}, {"_id": 0}).to_list(200)
+    total_borrowed = sum(b["amount"] for b in borrowed)
+    lent = await db.lend_borrow.find({"user_id": u["_id"], "direction": "lent", "status": {"$ne": "settled"}}, {"_id": 0}).to_list(200)
+    total_lent = sum(l["amount"] for l in lent)
+
+    assets = {
+        "cash": max(0, cash_balance),
+        "savings_goals": round(goal_savings, 2),
+        "investments": round(inv_value, 2),
+        "real_estate": round(re_value, 2),
+        "money_lent": round(total_lent, 2),
+    }
+    liabilities = {
+        "loans": round(total_loan_outstanding, 2),
+        "credit_cards": round(total_cc_outstanding, 2),
+        "money_borrowed": round(total_borrowed, 2),
+    }
+    total_assets = sum(assets.values())
+    total_liabilities = sum(liabilities.values())
+    net_worth = total_assets - total_liabilities
+    return {
+        "assets": assets,
+        "liabilities": liabilities,
+        "total_assets": round(total_assets, 2),
+        "total_liabilities": round(total_liabilities, 2),
+        "net_worth": round(net_worth, 2),
+    }
+
+# ═══════════════════ PHASE 2: ZERO-BASED BUDGET PLANNER ═══════════════════
+class ZeroBudgetBody(BaseModel):
+    month: str  # YYYY-MM
+    monthly_income: float
+    allocations: List[Dict[str, Any]]  # [{category, amount}]
+
+@api.get("/zero-budget/{month}")
+async def get_zero_budget(month: str, u: dict = Depends(current_user)):
+    doc = await db.zero_budgets.find_one({"user_id": u["_id"], "month": month}, {"_id": 0})
+    if not doc:
+        return {"month": month, "monthly_income": 0, "allocations": [], "total_allocated": 0, "unallocated": 0}
+    # Compute actual spend per category this month
+    txns = await db.ind_transactions.find({"user_id": u["_id"], "type": "expense", "date": {"$regex": f"^{month}"}}).to_list(5000)
+    actual = defaultdict(float)
+    for t in txns: actual[t["category"]] += t["amount"]
+    for a in doc.get("allocations", []):
+        spent = round(actual.get(a["category"], 0), 2)
+        a["spent"] = spent
+        a["remaining"] = round(a["amount"] - spent, 2)
+        a["percentage"] = round((spent / a["amount"]) * 100, 1) if a["amount"] > 0 else 0
+    total_alloc = sum(a["amount"] for a in doc.get("allocations", []))
+    doc["total_allocated"] = round(total_alloc, 2)
+    doc["unallocated"] = round(doc["monthly_income"] - total_alloc, 2)
+    return doc
+
+@api.post("/zero-budget")
+async def save_zero_budget(body: ZeroBudgetBody, u: dict = Depends(current_user)):
+    doc = {"user_id": u["_id"], "month": body.month, "monthly_income": body.monthly_income, "allocations": body.allocations, "updated_at": datetime.now(timezone.utc).isoformat()}
+    await db.zero_budgets.update_one({"user_id": u["_id"], "month": body.month}, {"$set": doc}, upsert=True)
+    return {"ok": True}
+
+# ═══════════════════ PHASE 2: LEND & BORROW LOG ═══════════════════
+class LendBorrowBody(BaseModel):
+    direction: str  # "lent" or "borrowed"
+    person: str
+    amount: float
+    date: str
+    due_date: Optional[str] = ""
+    interest_rate: Optional[float] = 0
+    notes: Optional[str] = ""
+    status: Optional[str] = "open"  # open, partial, settled
+
+@api.get("/lend-borrow")
+async def get_lend_borrow(u: dict = Depends(current_user)):
+    items = await db.lend_borrow.find({"user_id": u["_id"]}, {"_id": 0}).sort("date", -1).to_list(500)
+    total_lent = sum(i["amount"] for i in items if i["direction"] == "lent" and i.get("status") != "settled")
+    total_borrowed = sum(i["amount"] for i in items if i["direction"] == "borrowed" and i.get("status") != "settled")
+    return {"items": items, "total_lent": round(total_lent, 2), "total_borrowed": round(total_borrowed, 2), "net": round(total_lent - total_borrowed, 2)}
+
+@api.post("/lend-borrow")
+async def add_lend_borrow(body: LendBorrowBody, u: dict = Depends(current_user)):
+    if body.direction not in {"lent", "borrowed"}: raise HTTPException(400, "Invalid direction")
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], **body.dict(), "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.lend_borrow.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.patch("/lend-borrow/{lid}")
+async def update_lend_borrow(lid: str, request: Request, u: dict = Depends(current_user)):
+    body = await request.json()
+    updatable = {k: v for k, v in body.items() if k in {"status", "amount", "notes", "due_date"}}
+    await db.lend_borrow.update_one({"id": lid, "user_id": u["_id"]}, {"$set": updatable})
+    return {"ok": True}
+
+@api.delete("/lend-borrow/{lid}")
+async def del_lend_borrow(lid: str, u: dict = Depends(current_user)):
+    await db.lend_borrow.delete_one({"id": lid, "user_id": u["_id"]})
+    return {"ok": True}
+
+# ═══════════════════ PHASE 2: DEBT PAYOFF CALCULATOR ═══════════════════
+class DebtPayoffBody(BaseModel):
+    debts: List[Dict[str, Any]]  # [{name, balance, interest_rate, min_payment}]
+    extra_monthly: float
+    strategy: Optional[str] = "avalanche"  # avalanche | snowball | both
+
+def _simulate_payoff(debts: List[Dict[str, Any]], extra: float, strategy: str):
+    # Deep copy
+    items = [{"name": d["name"], "balance": float(d["balance"]), "rate": float(d["interest_rate"]), "min": float(d["min_payment"])} for d in debts]
+    if strategy == "avalanche":
+        items.sort(key=lambda x: -x["rate"])
+    else:  # snowball
+        items.sort(key=lambda x: x["balance"])
+    months = 0
+    total_interest = 0
+    payoff_order = []
+    max_months = 600
+    while any(i["balance"] > 0 for i in items) and months < max_months:
+        months += 1
+        # Apply interest
+        for it in items:
+            if it["balance"] > 0:
+                interest = it["balance"] * (it["rate"] / 12 / 100)
+                it["balance"] += interest
+                total_interest += interest
+        # Pay minimums
+        extra_pool = extra
+        for it in items:
+            if it["balance"] > 0:
+                pay = min(it["min"], it["balance"])
+                it["balance"] -= pay
+        # Apply extra to target (first with balance > 0 in sort order)
+        for it in items:
+            if it["balance"] > 0:
+                pay = min(extra_pool, it["balance"])
+                it["balance"] -= pay
+                extra_pool -= pay
+                if extra_pool <= 0: break
+        # Track payoff
+        for it in items:
+            if it["balance"] <= 0.01 and it["name"] not in payoff_order:
+                payoff_order.append(it["name"])
+                it["balance"] = 0
+    total_principal = sum(float(d["balance"]) for d in debts)
+    return {
+        "strategy": strategy,
+        "months_to_payoff": months,
+        "total_interest": round(total_interest, 2),
+        "total_paid": round(total_principal + total_interest, 2),
+        "payoff_order": payoff_order,
+    }
+
+@api.post("/debt-payoff/simulate")
+async def simulate_debt_payoff(body: DebtPayoffBody, u: dict = Depends(current_user)):
+    if not body.debts: raise HTTPException(400, "No debts provided")
+    if body.strategy == "both":
+        av = _simulate_payoff(body.debts, body.extra_monthly, "avalanche")
+        sn = _simulate_payoff(body.debts, body.extra_monthly, "snowball")
+        return {
+            "avalanche": av,
+            "snowball": sn,
+            "interest_saved_by_avalanche": round(sn["total_interest"] - av["total_interest"], 2),
+            "months_saved_by_avalanche": sn["months_to_payoff"] - av["months_to_payoff"],
+        }
+    return _simulate_payoff(body.debts, body.extra_monthly, body.strategy)
+
+# ═══════════════════ PHASE 3: SAVINGS JARS ═══════════════════
+class JarBody(BaseModel):
+    name: str
+    target: Optional[float] = 0
+    color: Optional[str] = "#F4845F"
+    icon: Optional[str] = "piggy-bank"
+
+class JarTxnBody(BaseModel):
+    amount: float
+    note: Optional[str] = ""
+
+@api.get("/jars")
+async def get_jars(u: dict = Depends(current_user)):
+    jars = await db.jars.find({"user_id": u["_id"]}, {"_id": 0}).to_list(50)
+    for j in jars:
+        j["balance"] = round(j.get("balance", 0), 2)
+        j["progress"] = round((j["balance"] / j["target"]) * 100, 1) if j.get("target", 0) > 0 else 0
+    total = sum(j["balance"] for j in jars)
+    return {"jars": jars, "total_saved": round(total, 2)}
+
+@api.post("/jars")
+async def create_jar(body: JarBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], "balance": 0, **body.dict(), "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.jars.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.post("/jars/{jid}/deposit")
+async def jar_deposit(jid: str, body: JarTxnBody, u: dict = Depends(current_user)):
+    await db.jars.update_one({"id": jid, "user_id": u["_id"]}, {"$inc": {"balance": body.amount}})
+    await db.jar_txns.insert_one({"user_id": u["_id"], "jar_id": jid, "amount": body.amount, "type": "deposit", "note": body.note, "date": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True}
+
+@api.post("/jars/{jid}/withdraw")
+async def jar_withdraw(jid: str, body: JarTxnBody, u: dict = Depends(current_user)):
+    await db.jars.update_one({"id": jid, "user_id": u["_id"]}, {"$inc": {"balance": -abs(body.amount)}})
+    await db.jar_txns.insert_one({"user_id": u["_id"], "jar_id": jid, "amount": body.amount, "type": "withdraw", "note": body.note, "date": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True}
+
+@api.delete("/jars/{jid}")
+async def del_jar(jid: str, u: dict = Depends(current_user)):
+    await db.jars.delete_one({"id": jid, "user_id": u["_id"]})
+    return {"ok": True}
+
+# ═══════════════════ PHASE 3: SIP / RD TRACKER ═══════════════════
+class SIPBody(BaseModel):
+    plan_type: str  # SIP or RD
+    name: str
+    monthly_amount: float
+    start_date: str
+    tenure_months: int
+    expected_return: Optional[float] = 12.0  # annual % — for RD use FD rate
+    bank_or_amc: Optional[str] = ""
+
+@api.get("/sip-rd")
+async def get_sips(u: dict = Depends(current_user)):
+    items = await db.sip_rd.find({"user_id": u["_id"]}, {"_id": 0}).to_list(200)
+    total_monthly = 0
+    total_invested_all = 0
+    total_value_all = 0
+    for it in items:
+        start = datetime.strptime(it["start_date"], "%Y-%m-%d")
+        months_elapsed = max(0, (datetime.now(timezone.utc).year - start.year) * 12 + datetime.now(timezone.utc).month - start.month)
+        installments = min(months_elapsed, it["tenure_months"])
+        invested = installments * it["monthly_amount"]
+        r = (it.get("expected_return") or 12) / 12 / 100
+        # FV of SIP annuity
+        if r > 0 and installments > 0:
+            fv = it["monthly_amount"] * (((1 + r) ** installments - 1) / r) * (1 + r)
+        else:
+            fv = invested
+        # Projection at maturity
+        n = it["tenure_months"]
+        if r > 0:
+            fv_mat = it["monthly_amount"] * (((1 + r) ** n - 1) / r) * (1 + r)
+        else:
+            fv_mat = it["monthly_amount"] * n
+        it["installments_paid"] = installments
+        it["invested_so_far"] = round(invested, 2)
+        it["current_value"] = round(fv, 2)
+        it["projected_maturity"] = round(fv_mat, 2)
+        it["projected_gain"] = round(fv_mat - (it["monthly_amount"] * n), 2)
+        total_monthly += it["monthly_amount"] if installments < n else 0
+        total_invested_all += invested
+        total_value_all += fv
+    return {
+        "items": items,
+        "total_monthly_commitment": round(total_monthly, 2),
+        "total_invested": round(total_invested_all, 2),
+        "total_current_value": round(total_value_all, 2),
+    }
+
+@api.post("/sip-rd")
+async def add_sip(body: SIPBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], **body.dict(), "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.sip_rd.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.delete("/sip-rd/{sid}")
+async def del_sip(sid: str, u: dict = Depends(current_user)):
+    await db.sip_rd.delete_one({"id": sid, "user_id": u["_id"]})
+    return {"ok": True}
+
+# ═══════════════════ PHASE 3: FD TRACKER ═══════════════════
+class FDBody(BaseModel):
+    bank: str
+    principal: float
+    interest_rate: float
+    start_date: str
+    tenure_months: int
+    compounding: Optional[str] = "quarterly"  # monthly, quarterly, yearly
+
+@api.get("/fds")
+async def get_fds(u: dict = Depends(current_user)):
+    items = await db.fds.find({"user_id": u["_id"]}, {"_id": 0}).to_list(100)
+    total_principal = 0
+    total_maturity = 0
+    for it in items:
+        comp_map = {"monthly": 12, "quarterly": 4, "yearly": 1}
+        n = comp_map.get(it.get("compounding", "quarterly"), 4)
+        t = it["tenure_months"] / 12
+        maturity = it["principal"] * ((1 + (it["interest_rate"] / 100) / n) ** (n * t))
+        interest = maturity - it["principal"]
+        start = datetime.strptime(it["start_date"], "%Y-%m-%d")
+        mat_date = start + timedelta(days=int(it["tenure_months"] * 30.42))
+        it["maturity_amount"] = round(maturity, 2)
+        it["interest_earned"] = round(interest, 2)
+        it["maturity_date"] = mat_date.strftime("%Y-%m-%d")
+        days_left = (mat_date - datetime.now(timezone.utc).replace(tzinfo=None)).days
+        it["days_to_maturity"] = max(0, days_left)
+        it["matured"] = days_left <= 0
+        total_principal += it["principal"]
+        total_maturity += maturity
+    return {"items": items, "total_principal": round(total_principal, 2), "total_maturity": round(total_maturity, 2), "total_interest": round(total_maturity - total_principal, 2)}
+
+@api.post("/fds")
+async def add_fd(body: FDBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], **body.dict(), "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.fds.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.delete("/fds/{fid}")
+async def del_fd(fid: str, u: dict = Depends(current_user)):
+    await db.fds.delete_one({"id": fid, "user_id": u["_id"]})
+    return {"ok": True}
+
+# ═══════════════════ PHASE 4: TAX — 80C/80D DEDUCTIONS ═══════════════════
+DEDUCTION_LIMITS = {
+    "80C": 150000,   # PPF, ELSS, EPF, Life Insurance, etc.
+    "80D": 75000,    # Health insurance (self + parents senior)
+    "80CCD(1B)": 50000,  # NPS additional
+    "80E": 0,        # No limit, education loan interest
+    "80G": 0,        # Donations (varies)
+    "80TTA": 10000,  # Savings interest
+    "24(b)": 200000, # Home loan interest
+}
+
+class DeductionBody(BaseModel):
+    section: str
+    name: str
+    amount: float
+    financial_year: str  # 2025-26
+    notes: Optional[str] = ""
+
+@api.get("/deductions/{fy}")
+async def get_deductions(fy: str, u: dict = Depends(current_user)):
+    items = await db.deductions.find({"user_id": u["_id"], "financial_year": fy}, {"_id": 0}).to_list(500)
+    by_section = defaultdict(lambda: {"total": 0, "items": [], "limit": 0, "remaining": 0, "utilization_pct": 0})
+    for it in items:
+        by_section[it["section"]]["items"].append(it)
+        by_section[it["section"]]["total"] += it["amount"]
+    for sec, data in by_section.items():
+        lim = DEDUCTION_LIMITS.get(sec, 0)
+        data["limit"] = lim
+        data["total"] = round(data["total"], 2)
+        data["remaining"] = round(max(0, lim - data["total"]), 2) if lim > 0 else 0
+        data["utilization_pct"] = round((data["total"] / lim) * 100, 1) if lim > 0 else 0
+    total_claimed = sum(d["total"] for d in by_section.values())
+    # Estimated tax saved at 30% slab
+    tax_saved = total_claimed * 0.30
+    return {"financial_year": fy, "sections": dict(by_section), "total_claimed": round(total_claimed, 2), "estimated_tax_saved": round(tax_saved, 2)}
+
+@api.post("/deductions")
+async def add_deduction(body: DeductionBody, u: dict = Depends(current_user)):
+    doc = {"id": str(ObjectId()), "user_id": u["_id"], **body.dict(), "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.deductions.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.delete("/deductions/{did}")
+async def del_deduction(did: str, u: dict = Depends(current_user)):
+    await db.deductions.delete_one({"id": did, "user_id": u["_id"]})
+    return {"ok": True}
+
+# ═══════════════════ PHASE 4: TAX CALENDAR ═══════════════════
+@api.get("/tax-calendar/{fy}")
+async def get_tax_calendar(fy: str, u: dict = Depends(current_user)):
+    # Indian tax calendar for FY (e.g. 2025-26)
+    start_year = int(fy.split("-")[0])
+    events = [
+        {"date": f"{start_year}-06-15", "title": "Advance Tax — 1st Installment", "description": "15% of estimated tax liability", "type": "advance_tax"},
+        {"date": f"{start_year}-07-31", "title": "ITR Filing (Non-Audit)", "description": "Last date to file ITR for individuals", "type": "itr"},
+        {"date": f"{start_year}-09-15", "title": "Advance Tax — 2nd Installment", "description": "45% cumulative", "type": "advance_tax"},
+        {"date": f"{start_year}-10-31", "title": "ITR Filing (Audit Cases)", "description": "Last date for audit cases", "type": "itr"},
+        {"date": f"{start_year}-12-15", "title": "Advance Tax — 3rd Installment", "description": "75% cumulative", "type": "advance_tax"},
+        {"date": f"{start_year+1}-01-31", "title": "TDS Certificate (Form 16A)", "description": "Quarterly TDS certificate", "type": "tds"},
+        {"date": f"{start_year+1}-03-15", "title": "Advance Tax — 4th Installment", "description": "100% cumulative", "type": "advance_tax"},
+        {"date": f"{start_year+1}-03-31", "title": "Tax Saving Investments Deadline", "description": "Last date for 80C/80D investments", "type": "investment"},
+        {"date": f"{start_year+1}-05-31", "title": "Form 16 Issuance", "description": "Employers issue Form 16", "type": "form16"},
+    ]
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    for e in events:
+        days_to = (datetime.strptime(e["date"], "%Y-%m-%d") - datetime.now(timezone.utc).replace(tzinfo=None)).days
+        e["days_until"] = days_to
+        e["status"] = "past" if days_to < 0 else "upcoming" if days_to > 7 else "due_soon"
+    return {"financial_year": fy, "events": events}
+
+# ═══════════════════ PHASE 4: ITR CATEGORY AUTO-TAG ═══════════════════
+ITR_CATEGORY_MAP = {
+    "Salary": "salary", "Income": "salary", "Bonus": "salary",
+    "Rent": "house_property", "Rental Income": "house_property",
+    "Dividend": "other_sources", "Interest": "other_sources", "FD Interest": "other_sources",
+    "Capital Gains": "capital_gains", "Investments": "capital_gains", "Stocks": "capital_gains",
+    "Business": "business", "Freelance": "business", "Consulting": "business",
+    "Groceries": "not_taxable", "Food": "not_taxable", "Transport": "not_taxable",
+    "Entertainment": "not_taxable", "Shopping": "not_taxable", "Utilities": "not_taxable",
+    "Rent Paid": "exempt_hra", "Medical": "80D", "Insurance": "80C",
+    "Donation": "80G", "PPF": "80C", "ELSS": "80C", "NPS": "80CCD(1B)",
+}
+
+@api.get("/itr-summary/{fy}")
+async def get_itr_summary(fy: str, u: dict = Depends(current_user)):
+    # fy format: 2025-26 (Apr 2025 - Mar 2026)
+    start_year = int(fy.split("-")[0])
+    start = f"{start_year}-04-01"
+    end = f"{start_year + 1}-03-31"
+    txns = await db.ind_transactions.find({"user_id": u["_id"], "date": {"$gte": start, "$lte": end}}, {"_id": 0}).to_list(20000)
+
+    itr_buckets = defaultdict(lambda: {"amount": 0, "count": 0, "txns": []})
+    for t in txns:
+        cat = t["category"]
+        itr_tag = ITR_CATEGORY_MAP.get(cat, "other_sources" if t["type"] == "income" else "not_taxable")
+        itr_buckets[itr_tag]["amount"] += t["amount"] if t["type"] == "income" else 0
+        itr_buckets[itr_tag]["count"] += 1
+
+    for k, v in itr_buckets.items():
+        v["amount"] = round(v["amount"], 2)
+        v.pop("txns", None)
+
+    total_income = sum(v["amount"] for k, v in itr_buckets.items() if k != "not_taxable")
+    return {"financial_year": fy, "buckets": dict(itr_buckets), "total_income": round(total_income, 2)}
+
+# ═══════════════════ PHASE 4: FORM 26AS UPLOAD & PARSE ═══════════════════
+@api.post("/tax/form26as/upload")
+async def upload_form26as(request: Request, u: dict = Depends(current_user)):
+    # Accept PDF as multipart/form-data OR JSON base64
+    content_type = request.headers.get("content-type", "")
+    pdf_bytes = None
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        f = form.get("file")
+        if f: pdf_bytes = await f.read()
+    else:
+        body = await request.json()
+        import base64
+        b64 = body.get("pdf_base64", "")
+        if b64: pdf_bytes = base64.b64decode(b64)
+    if not pdf_bytes: raise HTTPException(400, "No PDF provided")
+
+    # Parse with pdfplumber
+    text = ""
+    try:
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                text += (page.extract_text() or "") + "\n"
+    except Exception as e:
+        raise HTTPException(400, f"Failed to parse PDF: {e}")
+
+    # Extract TDS entries: amounts following "TDS" or large ₹ amounts in tables
+    tds_entries = []
+    amt_pattern = re.compile(r'(?:Rs\.?|INR|₹)?\s*([\d,]+\.\d{2})')
+    lines = text.split("\n")
+    total_tds = 0
+    total_income = 0
+    for ln in lines:
+        low = ln.lower()
+        m = amt_pattern.findall(ln)
+        if not m: continue
+        if "tds" in low or "tax deducted" in low:
+            try:
+                amt = float(m[-1].replace(",", ""))
+                tds_entries.append({"description": ln[:80].strip(), "amount": amt})
+                total_tds += amt
+            except: pass
+
+    # Save summary
+    doc = {
+        "id": str(ObjectId()), "user_id": u["_id"],
+        "total_tds": round(total_tds, 2),
+        "total_income": round(total_income, 2),
+        "entries": tds_entries[:50],
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.form_26as.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.get("/tax/form26as")
+async def get_form26as(u: dict = Depends(current_user)):
+    docs = await db.form_26as.find({"user_id": u["_id"]}, {"_id": 0}).sort("uploaded_at", -1).to_list(20)
+    return docs
+
+# ═══════════════════ PHASE 4+: UNUSUAL SPEND ALERTS ═══════════════════
+@api.get("/unusual-alerts")
+async def unusual_spend_alerts(u: dict = Depends(current_user)):
+    txns = await db.ind_transactions.find({"user_id": u["_id"], "type": "expense"}, {"_id": 0}).to_list(10000)
+    cats = defaultdict(list)
+    for t in txns:
+        cats[t["category"]].append(t)
+    alerts = []
+    for cat, entries in cats.items():
+        if len(entries) < 4: continue
+        amounts = [e["amount"] for e in entries]
+        avg = sum(amounts[:-1]) / (len(amounts) - 1)
+        std = (sum((a - avg) ** 2 for a in amounts[:-1]) / max(1, len(amounts) - 1)) ** 0.5
+        last = entries[-1]
+        # Z-score approach: flag if last transaction > avg + 2*std AND > avg*1.5
+        if last["amount"] > avg * 1.5 and last["amount"] > avg + 1.5 * std and std > 0:
+            alerts.append({
+                "category": cat,
+                "amount": last["amount"],
+                "date": last["date"],
+                "average": round(avg, 2),
+                "deviation_pct": round(((last["amount"] - avg) / avg) * 100, 1),
+                "severity": "high" if last["amount"] > avg * 2 else "medium",
+                "description": last.get("description", ""),
+            })
+    return {"alerts": sorted(alerts, key=lambda x: -x["deviation_pct"])}
+
 # ═══════════════════ STARTUP ═══════════════════
 @app.on_event("startup")
 async def startup():

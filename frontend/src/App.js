@@ -9,6 +9,15 @@ import { GoalsPage } from './pages/GoalsPage';
 import { BudgetsPage } from './pages/BudgetsPage';
 import { LoansPage } from './pages/LoansPage';
 import { CreditCardsPage } from './pages/CreditCardsPage';
+import { InvestmentsPage } from './pages/InvestmentsPage';
+import { RealEstatePage } from './pages/RealEstatePage';
+import { NetWorthPage } from './pages/NetWorthPage';
+import { ZeroBudgetPage } from './pages/ZeroBudgetPage';
+import { LendBorrowPage } from './pages/LendBorrowPage';
+import { DebtPayoffPage } from './pages/DebtPayoffPage';
+import { JarsPage } from './pages/JarsPage';
+import { SipRdPage } from './pages/SipRdPage';
+import { TaxPage } from './pages/TaxPage';
 import { PricingPage } from './pages/PricingPage';
 import { PaymentSuccessPage } from './pages/PaymentSuccessPage';
 import { Toaster } from 'sonner';
@@ -36,6 +45,15 @@ function App() {
           <Route path="/budgets" element={<Protected><BudgetsPage /></Protected>} />
           <Route path="/loans" element={<Protected><LoansPage /></Protected>} />
           <Route path="/credit-cards" element={<Protected><CreditCardsPage /></Protected>} />
+          <Route path="/investments" element={<Protected><InvestmentsPage /></Protected>} />
+          <Route path="/real-estate" element={<Protected><RealEstatePage /></Protected>} />
+          <Route path="/net-worth" element={<Protected><NetWorthPage /></Protected>} />
+          <Route path="/zero-budget" element={<Protected><ZeroBudgetPage /></Protected>} />
+          <Route path="/lend-borrow" element={<Protected><LendBorrowPage /></Protected>} />
+          <Route path="/debt-payoff" element={<Protected><DebtPayoffPage /></Protected>} />
+          <Route path="/jars" element={<Protected><JarsPage /></Protected>} />
+          <Route path="/sip-rd" element={<Protected><SipRdPage /></Protected>} />
+          <Route path="/tax" element={<Protected><TaxPage /></Protected>} />
         </Routes>
       </BrowserRouter>
       <Toaster position="top-right" richColors />

@@ -227,9 +227,22 @@ export const Dashboard = () => {
             )}
 
             {/* Quick Access Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {[{label:'Budgets',path:'/budgets',emoji:'📊'},{label:'Loans & EMI',path:'/loans',emoji:'🏦'},{label:'Credit Cards',path:'/credit-cards',emoji:'💳'},{label:'Pricing',path:'/pricing',emoji:'⭐'}].map(item=>(
-                <button key={item.label} onClick={()=>nav(item.path)} className="cashly-card p-4 text-center hover:border-[var(--coral)] border border-transparent transition-all" data-testid={`quick-${item.label.toLowerCase().replace(/\s/g,'-')}`}>
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+              {[
+                {label:'Budgets',path:'/budgets',emoji:'📊'},
+                {label:'Zero Budget',path:'/zero-budget',emoji:'🎯'},
+                {label:'Loans & EMI',path:'/loans',emoji:'🏦'},
+                {label:'Credit Cards',path:'/credit-cards',emoji:'💳'},
+                {label:'Debt Payoff',path:'/debt-payoff',emoji:'⚡'},
+                {label:'Investments',path:'/investments',emoji:'📈'},
+                {label:'Real Estate',path:'/real-estate',emoji:'🏠'},
+                {label:'Net Worth',path:'/net-worth',emoji:'💎'},
+                {label:'SIP · RD · FD',path:'/sip-rd',emoji:'🌱'},
+                {label:'Savings Jars',path:'/jars',emoji:'🫙'},
+                {label:'Lend & Borrow',path:'/lend-borrow',emoji:'🤝'},
+                {label:'Tax & 80C',path:'/tax',emoji:'🧾'},
+              ].map(item=>(
+                <button key={item.label} onClick={()=>nav(item.path)} className="cashly-card p-4 text-center hover:border-[var(--coral)] border border-transparent transition-all" data-testid={`quick-${item.label.toLowerCase().replace(/\s/g,'-').replace(/·/g,'')}`}>
                   <span className="text-2xl block mb-1">{item.emoji}</span>
                   <p className="text-xs font-semibold text-[var(--dark)]">{item.label}</p>
                 </button>
