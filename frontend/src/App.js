@@ -18,6 +18,7 @@ import { DebtPayoffPage } from './pages/DebtPayoffPage';
 import { JarsPage } from './pages/JarsPage';
 import { SipRdPage } from './pages/SipRdPage';
 import { TaxPage } from './pages/TaxPage';
+import { AdminPage } from './pages/AdminPage';
 import { PricingPage } from './pages/PricingPage';
 import { PaymentSuccessPage } from './pages/PaymentSuccessPage';
 import { PlanGate } from './components/PlanGate';
@@ -55,6 +56,7 @@ function App() {
           <Route path="/jars" element={<Protected><JarsPage /></Protected>} />
           <Route path="/sip-rd" element={<Protected><PlanGate feature="sip_rd"><SipRdPage /></PlanGate></Protected>} />
           <Route path="/tax" element={<Protected><PlanGate feature="tax_basic"><TaxPage /></PlanGate></Protected>} />
+          <Route path="/admin" element={<Protected><AdminPage /></Protected>} />
         </Routes>
       </BrowserRouter>
       <Toaster position="top-right" richColors />

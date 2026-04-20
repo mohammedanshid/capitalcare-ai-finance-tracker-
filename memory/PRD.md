@@ -65,6 +65,22 @@
 ## Test Results
 - Backend 58/58 (Phase 1: 28, Phase 2-4: 24, Gating: 6) — 100%
 - Frontend 100% — all plan tiers verified
+- Admin panel: 4 endpoints tested, 403 blocked for non-admins
+
+## Admin Panel (Apr 2026)
+Accessible only to users with `is_admin=true` at `/admin` (plus "Admin" button in header for admin users).
+- **Revenue dashboard**: MRR/ARR, active subscribers, conversion rate, 30d signups, plan distribution donut, monthly revenue bar chart, recent payments
+- **User management**: Searchable/filterable user list, inline plan editor (Free/Pro/Elite), delete user (non-admin only)
+- **Audit log**: All plan changes, manual overrides, user deletions with actor + reason; filterable by event type
+- `admin@capitalcare.ai` is auto-seeded with `is_admin=True` on startup
+
+### Admin endpoints
+- `GET /api/admin/users?q=&plan=&skip=&limit=`
+- `PATCH /api/admin/users/{uid}/plan` (body: `{plan, reason}`)
+- `DELETE /api/admin/users/{uid}`
+- `GET /api/admin/audit-log?event=&skip=&limit=`
+- `GET /api/admin/revenue`
+All require `is_admin=true` via `require_admin` dependency → 403 otherwise.
 
 ## Credentials
 - admin@capitalcare.ai / Admin@123 (see /app/memory/test_credentials.md)

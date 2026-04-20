@@ -72,6 +72,11 @@ export const Dashboard = () => {
             <span className="text-base font-bold text-[var(--dark)]">Capital Care AI</span>
           </div>
           <div className="flex items-center gap-1.5">
+            {user?.is_admin && (
+              <button onClick={() => nav('/admin')} className="flex items-center gap-1 h-7 px-2 rounded-full bg-[var(--dark)] text-white text-[10px] font-bold uppercase tracking-wider hover:bg-black" data-testid="admin-link" title="Admin Panel">
+                <Crown size={10} weight="fill" className="text-amber-400" /> Admin
+              </button>
+            )}
             {/* Plan Badge */}
             <button onClick={() => plan === 'free' ? nav('/pricing') : null} className={`hidden sm:flex items-center gap-1 h-7 px-3 rounded-full text-[10px] font-bold uppercase tracking-wider ${plan === 'elite' ? 'text-white' : plan === 'pro' ? 'bg-[var(--coral)] text-white' : 'bg-[var(--cream-light)] text-[var(--muted)] border border-[var(--border)] hover:bg-white'}`} style={plan === 'elite' ? { background: 'linear-gradient(135deg,#FFD700,#FFA500)' } : {}} data-testid="plan-badge">
               {plan === 'elite' && <Crown size={10} weight="fill" />} {plan}

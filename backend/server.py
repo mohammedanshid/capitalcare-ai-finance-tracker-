@@ -85,7 +85,7 @@ async def login(body: LoginBody, response: Response):
     if not u or not verify_pw(body.password, u["password_hash"]): raise HTTPException(401, "Invalid credentials")
     uid = str(u["_id"])
     set_cookies(response, uid, em)
-    return {"id": uid, "name": u["name"], "email": em, "persona": u.get("persona"), "plan": u.get("plan", "free"), "subscription_status": u.get("subscription_status", "inactive")}
+    return {"id": uid, "name": u["name"], "email": em, "persona": u.get("persona"), "plan": u.get("plan", "free"), "subscription_status": u.get("subscription_status", "inactive"), "is_admin": bool(u.get("is_admin"))}
 
 @api.post("/auth/logout")
 async def logout(response: Response):
@@ -1642,6 +1642,125 @@ async def unusual_spend_alerts(u: dict = Depends(current_user)):
             })
     return {"alerts": sorted(alerts, key=lambda x: -x["deviation_pct"])}
 
+# ═══════════════════ ADMIN PANEL ═══════════════════
+async def require_admin(u: dict = Depends(current_user)) -> dict:
+    if not u.get("is_admin"): raise HTTPException(403, "Admin access required")
+    return u
+
+@api.get("/admin/users")
+async def admin_list_users(request: Request, u: dict = Depends(require_admin)):
+    q = request.query_params.get("q", "").strip().lower()
+    plan_filter = request.query_params.get("plan", "")
+    skip = int(request.query_params.get("skip", 0))
+    limit = min(int(request.query_params.get("limit", 50)), 200)
+    where = {}
+    if q: where["$or"] = [{"email": {"$regex": q, "$options": "i"}}, {"name": {"$regex": q, "$options": "i"}}]
+    if plan_filter in ("free", "pro", "elite"): where["plan"] = plan_filter
+    total = await db.users.count_documents(where)
+    users = await db.users.find(where, {"password_hash": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    for x in users:
+        x["id"] = str(x.pop("_id"))
+        x["plan"] = x.get("plan", "free")
+        x["subscription_status"] = x.get("subscription_status", "inactive")
+        x["is_admin"] = bool(x.get("is_admin"))
+        if isinstance(x.get("created_at"), datetime): x["created_at"] = x["created_at"].isoformat()
+    return {"users": users, "total": total, "skip": skip, "limit": limit}
+
+@api.patch("/admin/users/{uid}/plan")
+async def admin_set_plan(uid: str, request: Request, u: dict = Depends(require_admin)):
+    body = await request.json()
+    new_plan = body.get("plan")
+    reason = body.get("reason", "manual admin override")
+    if new_plan not in ("free", "pro", "elite"): raise HTTPException(400, "Invalid plan")
+    try: oid = ObjectId(uid)
+    except: raise HTTPException(400, "Invalid user id")
+    target = await db.users.find_one({"_id": oid})
+    if not target: raise HTTPException(404, "User not found")
+    old_plan = target.get("plan", "free")
+    sub_status = "active" if new_plan in ("pro", "elite") else "inactive"
+    await db.users.update_one({"_id": oid}, {"$set": {"plan": new_plan, "subscription_status": sub_status, "plan_updated_at": datetime.now(timezone.utc).isoformat()}})
+    await db.admin_audit_log.insert_one({
+        "event": "plan_change_manual", "user_email": target.get("email"),
+        "old_plan": old_plan, "new_plan": new_plan,
+        "actor_email": u.get("email"), "reason": reason,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"ok": True, "old_plan": old_plan, "new_plan": new_plan}
+
+@api.delete("/admin/users/{uid}")
+async def admin_delete_user(uid: str, u: dict = Depends(require_admin)):
+    try: oid = ObjectId(uid)
+    except: raise HTTPException(400, "Invalid user id")
+    if str(u["_id"]) == uid: raise HTTPException(400, "Cannot delete your own account")
+    target = await db.users.find_one({"_id": oid})
+    if not target: raise HTTPException(404, "User not found")
+    await db.users.delete_one({"_id": oid})
+    await db.admin_audit_log.insert_one({
+        "event": "user_deleted", "user_email": target.get("email"),
+        "actor_email": u.get("email"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"ok": True}
+
+@api.get("/admin/audit-log")
+async def admin_audit_log(request: Request, u: dict = Depends(require_admin)):
+    skip = int(request.query_params.get("skip", 0))
+    limit = min(int(request.query_params.get("limit", 100)), 500)
+    event_filter = request.query_params.get("event", "")
+    where = {"event": event_filter} if event_filter else {}
+    total = await db.admin_audit_log.count_documents(where)
+    logs = await db.admin_audit_log.find(where, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    return {"logs": logs, "total": total}
+
+@api.get("/admin/revenue")
+async def admin_revenue(u: dict = Depends(require_admin)):
+    # Plan distribution
+    free_count = await db.users.count_documents({"$or": [{"plan": "free"}, {"plan": {"$exists": False}}]})
+    pro_count = await db.users.count_documents({"plan": "pro"})
+    elite_count = await db.users.count_documents({"plan": "elite"})
+    total_users = free_count + pro_count + elite_count
+
+    # MRR calculation (simple: count × price)
+    mrr = round(pro_count * 4.99 + elite_count * 9.99, 2)
+    arr = round(mrr * 12, 2)
+
+    # Active subscribers
+    active_count = pro_count + elite_count
+    churn_count = await db.users.count_documents({"subscription_status": "cancelled"})
+    failed_count = await db.users.count_documents({"subscription_status": "payment_failed"})
+
+    # Conversion rate
+    conversion_rate = round((active_count / total_users) * 100, 2) if total_users > 0 else 0
+
+    # Recent signups (last 30 days)
+    thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+    recent_signups = await db.users.count_documents({"created_at": {"$gte": thirty_days_ago}})
+
+    # Revenue by month (last 6 months, derived from audit log plan upgrades)
+    six_months_ago = (datetime.now(timezone.utc) - timedelta(days=180)).isoformat()
+    monthly_upgrades = await db.admin_audit_log.find({"event": {"$in": ["plan_change", "plan_change_manual"]}, "new_plan": {"$in": ["pro", "elite"]}, "created_at": {"$gte": six_months_ago}}, {"_id": 0}).to_list(1000)
+    by_month = defaultdict(lambda: {"upgrades": 0, "revenue": 0})
+    for log in monthly_upgrades:
+        mth = log.get("created_at", "")[:7]
+        by_month[mth]["upgrades"] += 1
+        by_month[mth]["revenue"] += 4.99 if log.get("new_plan") == "pro" else 9.99
+    monthly = [{"month": k, "upgrades": v["upgrades"], "revenue": round(v["revenue"], 2)} for k, v in sorted(by_month.items())]
+
+    # Recent paid transactions
+    recent_payments = await db.payment_transactions.find({"payment_status": "paid"}, {"_id": 0}).sort("created_at", -1).limit(10).to_list(10)
+
+    return {
+        "plan_distribution": {"free": free_count, "pro": pro_count, "elite": elite_count, "total": total_users},
+        "mrr": mrr, "arr": arr,
+        "active_subscribers": active_count,
+        "churn_count": churn_count,
+        "payment_failed_count": failed_count,
+        "conversion_rate": conversion_rate,
+        "recent_signups_30d": recent_signups,
+        "monthly_history": monthly,
+        "recent_payments": recent_payments,
+    }
+
 # ═══════════════════ STARTUP ═══════════════════
 @app.on_event("startup")
 async def startup():
@@ -1651,10 +1770,14 @@ async def startup():
     await db.ca_clients.create_index("user_id")
     await db.ca_tasks.create_index("user_id")
     # Seed admin
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@capitalcare.com")
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@capitalcare.ai")
     admin_pw = os.environ.get("ADMIN_PASSWORD", "Admin@123")
-    if not await db.users.find_one({"email": admin_email}):
-        await db.users.insert_one({"email": admin_email, "password_hash": hash_pw(admin_pw), "name": "Admin", "persona": None, "created_at": datetime.now(timezone.utc)})
+    existing_admin = await db.users.find_one({"email": admin_email})
+    if not existing_admin:
+        await db.users.insert_one({"email": admin_email, "password_hash": hash_pw(admin_pw), "name": "Admin", "persona": "individual", "plan": "elite", "subscription_status": "active", "is_admin": True, "created_at": datetime.now(timezone.utc)})
+    else:
+        # Ensure admin flag is set
+        await db.users.update_one({"email": admin_email}, {"$set": {"is_admin": True}})
     # Write creds
     Path("/app/memory").mkdir(exist_ok=True)
     Path("/app/memory/test_credentials.md").write_text(f"# Capital Care AI Credentials\n- Email: {admin_email}\n- Password: {admin_pw}\n- Endpoints: /api/auth/login, /api/auth/register, /api/persona/select\n")
