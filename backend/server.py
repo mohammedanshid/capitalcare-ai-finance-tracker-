@@ -21,7 +21,7 @@ if not mongo_url:
     raise Exception("❌ MONGO_URL not set")
 
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ.get('DB_NAME', 'test')]
+db = client[os.environ.get('DB_NAME', 'finance_app')]
 
 JWT_SECRET = os.environ.get('JWT_SECRET', 'mysecret123')
 JWT_ALGORITHM = "HS256"
@@ -32,7 +32,7 @@ api = APIRouter(prefix="/api")
 # ================= CORS =================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # later restrict to your frontend domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -67,7 +67,6 @@ async def current_user(request: Request):
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
 
         user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
-
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
 
@@ -75,7 +74,7 @@ async def current_user(request: Request):
         user.pop("password_hash", None)
         return user
 
-    except Exception:
+    except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # ================= MODELS =================
@@ -88,14 +87,19 @@ class LoginBody(BaseModel):
     email: EmailStr
     password: str
 
-# ================= AUTH ROUTES =================
+class Transaction(BaseModel):
+    title: str
+    amount: float
+    type: str  # income / expense
+    category: str
+
+# ================= AUTH =================
 @api.post("/register")
 async def register(body: RegBody):
     email = body.email.lower()
 
-    existing = await db.users.find_one({"email": email})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already exists")
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(400, "Email already exists")
 
     user = {
         "name": body.name,
@@ -109,7 +113,6 @@ async def register(body: RegBody):
     token = make_token(str(res.inserted_id), email)
 
     return {
-        "message": "Registered successfully",
         "token": token,
         "user": {
             "id": str(res.inserted_id),
@@ -123,12 +126,11 @@ async def login(body: LoginBody):
     user = await db.users.find_one({"email": body.email.lower()})
 
     if not user or not verify_pw(body.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(401, "Invalid credentials")
 
     token = make_token(str(user["_id"]), user["email"])
 
     return {
-        "message": "Login successful",
         "token": token,
         "user": {
             "id": str(user["_id"]),
@@ -141,7 +143,47 @@ async def login(body: LoginBody):
 async def me(user=Depends(current_user)):
     return user
 
-# ================= AI (SAFE PLACEHOLDER) =================
+# ================= TRANSACTIONS =================
+@api.post("/transactions")
+async def add_transaction(data: Transaction, user=Depends(current_user)):
+    tx = {
+        "user_id": user["_id"],
+        "title": data.title,
+        "amount": data.amount,
+        "type": data.type,
+        "category": data.category,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.transactions.insert_one(tx)
+    return {"message": "Transaction added"}
+
+@api.get("/transactions")
+async def get_transactions(user=Depends(current_user)):
+    res = []
+    async for t in db.transactions.find({"user_id": user["_id"]}):
+        t["_id"] = str(t["_id"])
+        res.append(t)
+    return res
+
+# ================= DASHBOARD =================
+@api.get("/dashboard")
+async def dashboard(user=Depends(current_user)):
+    income = 0
+    expense = 0
+
+    async for t in db.transactions.find({"user_id": user["_id"]}):
+        if t["type"] == "income":
+            income += t["amount"]
+        else:
+            expense += t["amount"]
+
+    return {
+        "income": income,
+        "expense": expense,
+        "balance": income - expense,
+    }
+
+# ================= AI (PLACEHOLDER) =================
 @api.post("/ai/chat")
 async def ai_chat():
     return {"response": "AI temporarily disabled"}
