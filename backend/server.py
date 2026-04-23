@@ -5,7 +5,7 @@ import os
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr
@@ -15,7 +15,11 @@ import bcrypt
 import jwt
 
 # ================= DATABASE =================
-mongo_url = os.environ['MONGO_URL']
+mongo_url = os.environ.get('MONGO_URL')
+
+if not mongo_url:
+    raise Exception("❌ MONGO_URL not set")
+
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ.get('DB_NAME', 'test')]
 
@@ -28,7 +32,7 @@ api = APIRouter(prefix="/api")
 # ================= CORS =================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # later restrict to your frontend domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -53,24 +57,28 @@ def make_token(uid, email):
     )
 
 async def current_user(request: Request):
-    token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if not token:
-        raise HTTPException(401, "Not authenticated")
+    auth = request.headers.get("Authorization")
+
+    if not auth:
+        raise HTTPException(status_code=401, detail="No token")
 
     try:
+        token = auth.split(" ")[1]
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+
         user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
+
         if not user:
-            raise HTTPException(401, "User not found")
+            raise HTTPException(status_code=401, detail="User not found")
 
         user["_id"] = str(user["_id"])
         user.pop("password_hash", None)
         return user
 
-    except:
-        raise HTTPException(401, "Invalid token")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-# ================= AUTH =================
+# ================= MODELS =================
 class RegBody(BaseModel):
     name: str
     email: EmailStr
@@ -80,12 +88,14 @@ class LoginBody(BaseModel):
     email: EmailStr
     password: str
 
+# ================= AUTH ROUTES =================
 @api.post("/register")
 async def register(body: RegBody):
     email = body.email.lower()
 
-    if await db.users.find_one({"email": email}):
-        raise HTTPException(400, "Email exists")
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already exists")
 
     user = {
         "name": body.name,
@@ -99,6 +109,7 @@ async def register(body: RegBody):
     token = make_token(str(res.inserted_id), email)
 
     return {
+        "message": "Registered successfully",
         "token": token,
         "user": {
             "id": str(res.inserted_id),
@@ -112,11 +123,12 @@ async def login(body: LoginBody):
     user = await db.users.find_one({"email": body.email.lower()})
 
     if not user or not verify_pw(body.password, user["password_hash"]):
-        raise HTTPException(401, "Invalid credentials")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = make_token(str(user["_id"]), user["email"])
 
     return {
+        "message": "Login successful",
         "token": token,
         "user": {
             "id": str(user["_id"]),
@@ -129,7 +141,7 @@ async def login(body: LoginBody):
 async def me(user=Depends(current_user)):
     return user
 
-# ================= AI (SAFE VERSION) =================
+# ================= AI (SAFE PLACEHOLDER) =================
 @api.post("/ai/chat")
 async def ai_chat():
     return {"response": "AI temporarily disabled"}
