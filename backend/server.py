@@ -29,10 +29,13 @@ JWT_ALGORITHM = "HS256"
 app = FastAPI()
 api = APIRouter(prefix="/api")
 
-# ================= CORS =================
+# ================= CORS (FIXED) =================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://capitalcare-ai-finance-tracker-dbi7kbixa.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -182,7 +185,7 @@ async def dashboard(user=Depends(current_user)):
         "balance": income - expenses,
     }
 
-# ================= ADVANCED DASHBOARD (FOR OLD UI) =================
+# ================= ADVANCED DASHBOARD =================
 @api.get("/individual/dashboard")
 async def individual_dashboard(user=Depends(current_user)):
     income = 0
@@ -194,7 +197,6 @@ async def individual_dashboard(user=Depends(current_user)):
             income += t["amount"]
         else:
             expenses += t["amount"]
-
             cat = t.get("category", "Other")
             category_map[cat] = category_map.get(cat, 0) + t["amount"]
 
