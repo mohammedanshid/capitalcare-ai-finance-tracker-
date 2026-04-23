@@ -59,7 +59,7 @@ def make_token(uid, email):
 async def current_user(request: Request):
     auth = request.headers.get("Authorization")
 
-    if not auth:
+    if not auth or "Bearer " not in auth:
         raise HTTPException(status_code=401, detail="No token")
 
     try:
@@ -74,7 +74,7 @@ async def current_user(request: Request):
         user.pop("password_hash", None)
         return user
 
-    except:
+    except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # ================= MODELS =================
@@ -99,7 +99,7 @@ async def register(body: RegBody):
     email = body.email.lower()
 
     if await db.users.find_one({"email": email}):
-        raise HTTPException(400, "Email already exists")
+        raise HTTPException(status_code=400, detail="Email already exists")
 
     user = {
         "name": body.name,
@@ -109,7 +109,6 @@ async def register(body: RegBody):
     }
 
     res = await db.users.insert_one(user)
-
     token = make_token(str(res.inserted_id), email)
 
     return {
@@ -126,7 +125,7 @@ async def login(body: LoginBody):
     user = await db.users.find_one({"email": body.email.lower()})
 
     if not user or not verify_pw(body.password, user["password_hash"]):
-        raise HTTPException(401, "Invalid credentials")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = make_token(str(user["_id"]), user["email"])
 
@@ -147,7 +146,7 @@ async def me(user=Depends(current_user)):
 @api.post("/transactions")
 async def add_transaction(data: Transaction, user=Depends(current_user)):
     tx = {
-        "user_id": user["_id"],
+        "user_id": user["_id"],  # string ID
         "title": data.title,
         "amount": data.amount,
         "type": data.type,
@@ -169,21 +168,21 @@ async def get_transactions(user=Depends(current_user)):
 @api.get("/dashboard")
 async def dashboard(user=Depends(current_user)):
     income = 0
-    expense = 0
+    expenses = 0
 
     async for t in db.transactions.find({"user_id": user["_id"]}):
         if t["type"] == "income":
             income += t["amount"]
         else:
-            expense += t["amount"]
+            expenses += t["amount"]
 
     return {
         "income": income,
-        "expense": expense,
-        "balance": income - expense,
+        "expenses": expenses,  # ✅ FIXED KEY
+        "balance": income - expenses,
     }
 
-# ================= AI (PLACEHOLDER) =================
+# ================= AI =================
 @api.post("/ai/chat")
 async def ai_chat():
     return {"response": "AI temporarily disabled"}
