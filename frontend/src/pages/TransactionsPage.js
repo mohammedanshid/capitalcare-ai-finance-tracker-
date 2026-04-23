@@ -11,20 +11,44 @@ export const TransactionsPage = () => {
     category: "",
   });
 
+  const [loading, setLoading] = useState(false);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
+    const token = localStorage.getItem("token");
+
+    // ✅ Check token
+    if (!token) {
+      alert("⚠️ Please login again");
+      return;
+    }
+
+    // ✅ Basic validation
+    if (!form.title || !form.amount || !form.category) {
+      alert("⚠️ Fill all fields");
+      return;
+    }
+
     try {
-      const token = localStorage.getItem("token");
+      setLoading(true);
 
-      await axios.post(`${API}/api/transactions`, form, {
-        headers: {
-          Authorization: `Bearer ${token}`,
+      await axios.post(
+        `${API}/api/transactions`,
+        {
+          ...form,
+          amount: Number(form.amount), // ✅ ensure number
         },
-      });
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
 
-      alert("✅ Transaction added");
+      alert("✅ Transaction added!");
 
+      // ✅ Reset form
       setForm({
         title: "",
         amount: "",
@@ -35,6 +59,8 @@ export const TransactionsPage = () => {
     } catch (err) {
       console.log(err.response?.data || err.message);
       alert("❌ Failed to add transaction");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -47,14 +73,16 @@ export const TransactionsPage = () => {
           placeholder="Title"
           value={form.title}
           onChange={(e) => setForm({ ...form, title: e.target.value })}
-        /><br /><br />
+        />
+        <br /><br />
 
         <input
           type="number"
           placeholder="Amount"
           value={form.amount}
           onChange={(e) => setForm({ ...form, amount: e.target.value })}
-        /><br /><br />
+        />
+        <br /><br />
 
         <select
           value={form.type}
@@ -62,15 +90,19 @@ export const TransactionsPage = () => {
         >
           <option value="expense">Expense</option>
           <option value="income">Income</option>
-        </select><br /><br />
+        </select>
+        <br /><br />
 
         <input
           placeholder="Category"
           value={form.category}
           onChange={(e) => setForm({ ...form, category: e.target.value })}
-        /><br /><br />
+        />
+        <br /><br />
 
-        <button type="submit">Add</button>
+        <button type="submit" disabled={loading}>
+          {loading ? "Adding..." : "Add Transaction"}
+        </button>
       </form>
     </div>
   );
