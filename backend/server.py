@@ -90,7 +90,7 @@ class LoginBody(BaseModel):
 class Transaction(BaseModel):
     title: str
     amount: float
-    type: str  # income / expense
+    type: str
     category: str
 
 # ================= AUTH =================
@@ -146,7 +146,7 @@ async def me(user=Depends(current_user)):
 @api.post("/transactions")
 async def add_transaction(data: Transaction, user=Depends(current_user)):
     tx = {
-        "user_id": user["_id"],  # string ID
+        "user_id": user["_id"],
         "title": data.title,
         "amount": data.amount,
         "type": data.type,
@@ -164,7 +164,7 @@ async def get_transactions(user=Depends(current_user)):
         res.append(t)
     return res
 
-# ================= DASHBOARD =================
+# ================= SIMPLE DASHBOARD =================
 @api.get("/dashboard")
 async def dashboard(user=Depends(current_user)):
     income = 0
@@ -178,8 +178,40 @@ async def dashboard(user=Depends(current_user)):
 
     return {
         "income": income,
-        "expenses": expenses,  # ✅ FIXED KEY
+        "expenses": expenses,
         "balance": income - expenses,
+    }
+
+# ================= ADVANCED DASHBOARD (FOR OLD UI) =================
+@api.get("/individual/dashboard")
+async def individual_dashboard(user=Depends(current_user)):
+    income = 0
+    expenses = 0
+    category_map = {}
+
+    async for t in db.transactions.find({"user_id": user["_id"]}):
+        if t["type"] == "income":
+            income += t["amount"]
+        else:
+            expenses += t["amount"]
+
+            cat = t.get("category", "Other")
+            category_map[cat] = category_map.get(cat, 0) + t["amount"]
+
+    category_breakdown = [
+        {"name": k, "value": v} for k, v in category_map.items()
+    ]
+
+    return {
+        "income": income,
+        "expenses": expenses,
+        "net_worth": income - expenses,
+        "savings_rate": 0,
+        "monthly_series": [],
+        "category_breakdown": category_breakdown,
+        "goals": [],
+        "sparkline_income": [],
+        "sparkline_expenses": []
     }
 
 # ================= AI =================
