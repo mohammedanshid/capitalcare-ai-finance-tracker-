@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
 import { Eye, EyeSlash, ArrowLeft } from '@phosphor-icons/react';
 
 export const AuthPage = () => {
@@ -12,45 +11,74 @@ export const AuthPage = () => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const { login, register } = useAuth();
   const nav = useNavigate();
 
-  // ✅ FIXED SUBMIT FUNCTION + DEBUG
+  // ✅ FINAL WORKING SUBMIT
   const submit = async (e) => {
     e.preventDefault();
 
-    console.log("🔥 FORM SUBMITTED"); // ✅ DEBUG
+    console.log("🔥 SUBMIT TRIGGERED");
 
     setError('');
     setLoading(true);
 
     try {
-      let res;
+      const API = "https://capitalcare-ai-finance-tracker.onrender.com";
 
       if (isLogin) {
-        console.log("➡️ Trying login...");
-        res = await login(email, password);
-      } else {
-        if (!name.trim()) {
-          setError('Name required');
-          setLoading(false);
-          return;
+        console.log("➡️ CALLING LOGIN API");
+
+        const response = await fetch(`${API}/api/login`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            email,
+            password,
+          }),
+          credentials: "include", // ✅ IMPORTANT
+        });
+
+        const data = await response.json();
+        console.log("✅ LOGIN RESPONSE:", data);
+
+        if (!response.ok) {
+          throw new Error(data.detail || "Login failed");
         }
-        console.log("➡️ Trying register...");
-        res = await register(name, email, password);
-      }
 
-      console.log("✅ RESPONSE:", res);
-
-      if (res.success) {
         window.location.href = "/dashboard";
+        return;
+
       } else {
-        setError(res.error || "Something went wrong");
+        console.log("➡️ CALLING REGISTER API");
+
+        const response = await fetch(`${API}/api/register`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            name,
+            email,
+            password,
+          }),
+          credentials: "include",
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.detail || "Register failed");
+        }
+
+        window.location.href = "/dashboard";
+        return;
       }
 
     } catch (err) {
       console.log("❌ ERROR:", err);
-      setError("Login failed");
+      setError(err.message || "Login failed");
     }
 
     setLoading(false);
@@ -121,7 +149,6 @@ export const AuthPage = () => {
               </p>
             )}
 
-            {/* ✅ DEBUG BUTTON CLICK */}
             <button
               type="submit"
               disabled={loading}
