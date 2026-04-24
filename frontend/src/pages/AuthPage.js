@@ -13,21 +13,21 @@ export const AuthPage = () => {
 
   const nav = useNavigate();
 
-  // ✅ FULL DEBUG + FIXED SUBMIT
+  // ✅ CLEAN + FIXED SUBMIT
   const submit = async (e) => {
     e.preventDefault();
-
-    console.log("🔥 SUBMIT WORKING"); // ✅ DEBUG
 
     setError('');
     setLoading(true);
 
     try {
       const API = "https://capitalcare-ai-finance-tracker.onrender.com";
-
       const endpoint = isLogin ? "/api/login" : "/api/register";
 
-      console.log("➡️ CALLING:", API + endpoint);
+      // ✅ VALIDATION
+      if (!isLogin && !name.trim()) {
+        throw new Error("Name is required");
+      }
 
       const response = await fetch(`${API}${endpoint}`, {
         method: "POST",
@@ -42,22 +42,19 @@ export const AuthPage = () => {
         credentials: "include",
       });
 
-      console.log("📡 STATUS:", response.status);
-
       const data = await response.json();
-      console.log("📦 DATA:", data);
 
+      // ✅ FIXED ERROR HANDLING
       if (!response.ok) {
-        throw new Error(data.detail || "Request failed");
+        throw new Error(data.detail || data.message || "Request failed");
       }
 
-      console.log("✅ SUCCESS LOGIN");
-
+      // ✅ SUCCESS
       window.location.href = "/dashboard";
 
     } catch (err) {
       console.log("❌ ERROR:", err);
-      setError("Failed to fetch");
+      setError(err.message || "Something went wrong"); // ✅ FIXED
     }
 
     setLoading(false);
@@ -83,7 +80,6 @@ export const AuthPage = () => {
             {isLogin ? 'Welcome back' : 'Create account'}
           </h1>
 
-          {/* ✅ FIXED FORM */}
           <form onSubmit={submit} noValidate className="space-y-3.5">
 
             {!isLogin && (
@@ -123,20 +119,23 @@ export const AuthPage = () => {
               </button>
             </div>
 
+            {/* ✅ ERROR MESSAGE */}
             {error && (
               <p style={{ color: "red", fontSize: 13 }}>
                 {error}
               </p>
             )}
 
-            {/* ✅ FIXED BUTTON */}
             <button
               type="submit"
               disabled={loading}
-              onClick={() => console.log("🟢 BUTTON CLICKED")} // DEBUG
               className="w-full btn-coral h-12 text-sm"
             >
-              {loading ? 'Please wait...' : isLogin ? 'Sign in' : 'Create account'}
+              {loading
+                ? 'Please wait...'
+                : isLogin
+                  ? 'Sign in'
+                  : 'Create account'}
             </button>
 
           </form>
