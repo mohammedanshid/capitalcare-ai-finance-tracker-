@@ -31,14 +31,16 @@ JWT_ALGORITHM = "HS256"
 app = FastAPI()
 api = APIRouter(prefix="/api")
 
-# ================= CORS =================
+# ================= CORS (🔥 FIXED) =================
+origins = [
+    "http://localhost:3000",
+    "https://capitalcare-ai-finance-tracker.vercel.app",
+    "https://capitalcare-ai-finance-tracker-dbi7kbixa.vercel.app",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://capitalcare-ai-finance-tracker.vercel.app",
-        "https://capitalcare-ai-finance-tracker-dbi7kbixa.vercel.app"
-    ],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -75,7 +77,6 @@ def make_token(uid, email):
         algorithm=JWT_ALGORITHM
     )
 
-# ✅ COOKIE + HEADER SUPPORT
 async def current_user(request: Request):
     token = request.cookies.get("access_token")
 
@@ -132,23 +133,16 @@ async def register(data: Register, response: Response):
     res = await db.users.insert_one(user)
     token = make_token(str(res.inserted_id), data.email)
 
+    # 🔥 FIXED COOKIE
     response.set_cookie(
         key="access_token",
         value=token,
         httponly=True,
         secure=True,
-        samesite="None"
+        samesite="none"
     )
 
-    return {
-        "message": "Registered",
-        "user": {
-            "id": str(res.inserted_id),
-            "name": data.name,
-            "email": data.email,
-            "plan": "free"
-        }
-    }
+    return {"message": "Registered"}
 
 @api.post("/login")
 async def login(data: Login, response: Response):
@@ -159,24 +153,16 @@ async def login(data: Login, response: Response):
 
     token = make_token(str(user["_id"]), user["email"])
 
+    # 🔥 FIXED COOKIE
     response.set_cookie(
         key="access_token",
         value=token,
         httponly=True,
         secure=True,
-        samesite="None"
+        samesite="none"
     )
 
-    # ✅ IMPORTANT FIX (RETURN USER)
-    return {
-        "message": "Logged in",
-        "user": {
-            "id": str(user["_id"]),
-            "name": user["name"],
-            "email": user["email"],
-            "plan": user.get("plan", "free")
-        }
-    }
+    return {"message": "Logged in"}
 
 @api.get("/me")
 async def me(user=Depends(current_user)):
@@ -187,8 +173,6 @@ async def me(user=Depends(current_user)):
 
 @api.post("/transactions")
 async def add_transaction(data: Transaction, user=Depends(current_user)):
-    check_feature(user, "transactions")
-
     tx = {
         "user_id": user["_id"],
         "title": data.title,
@@ -225,45 +209,8 @@ async def dashboard(user=Depends(current_user)):
     return {
         "income": income,
         "expenses": expenses,
-        "balance": income - expenses,
-        "plan": user.get("plan", "free")
+        "balance": income - expenses
     }
-
-# ================= EXTRA =================
-
-@api.get("/daily-limit")
-async def daily_limit(user=Depends(current_user)):
-    check_feature(user, "daily_limit")
-    return {"limit": 500, "remaining": 300, "spent_today": 200, "percentage": 40}
-
-@api.get("/weekly-digest")
-async def weekly_digest(user=Depends(current_user)):
-    check_feature(user, "weekly_digest")
-    return {
-        "total_spent": 1200,
-        "total_saved": 300,
-        "top_categories": [{"name": "Food"}],
-        "vs_last_week": -5
-    }
-
-@api.post("/ai/chat")
-async def ai_chat(user=Depends(current_user)):
-    check_feature(user, "ai_chat")
-    return {"response": "AI working 🚀"}
-
-# ================= UPGRADE =================
-
-@api.post("/upgrade")
-async def upgrade(plan: str, user=Depends(current_user)):
-    if plan not in ["free", "pro", "elite"]:
-        raise HTTPException(400, "Invalid plan")
-
-    await db.users.update_one(
-        {"_id": ObjectId(user["_id"])},
-        {"$set": {"plan": plan}}
-    )
-
-    return {"message": f"Upgraded to {plan}"}
 
 # ================= ROOT =================
 
