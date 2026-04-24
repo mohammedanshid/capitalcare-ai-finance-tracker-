@@ -31,16 +31,16 @@ JWT_ALGORITHM = "HS256"
 app = FastAPI()
 api = APIRouter(prefix="/api")
 
-# ================= CORS (🔥 FIXED) =================
+# ================= CORS (🔥 FINAL FIX) =================
 origins = [
     "http://localhost:3000",
     "https://capitalcare-ai-finance-tracker.vercel.app",
-    "https://capitalcare-ai-finance-tracker-dbi7kbixa.vercel.app",
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",  # ✅ ALLOW ALL VERCEL DEPLOYS
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -80,6 +80,7 @@ def make_token(uid, email):
 async def current_user(request: Request):
     token = request.cookies.get("access_token")
 
+    # 🔥 ALSO SUPPORT AUTH HEADER (important fallback)
     if not token:
         auth = request.headers.get("Authorization")
         if auth and "Bearer " in auth:
@@ -122,6 +123,10 @@ class Transaction(BaseModel):
 
 @api.post("/register")
 async def register(data: Register, response: Response):
+    existing = await db.users.find_one({"email": data.email.lower()})
+    if existing:
+        raise HTTPException(400, "Email already registered")
+
     user = {
         "name": data.name,
         "email": data.email.lower(),
@@ -133,7 +138,7 @@ async def register(data: Register, response: Response):
     res = await db.users.insert_one(user)
     token = make_token(str(res.inserted_id), data.email)
 
-    # 🔥 FIXED COOKIE
+    # 🔥 COOKIE FIX
     response.set_cookie(
         key="access_token",
         value=token,
@@ -153,7 +158,7 @@ async def login(data: Login, response: Response):
 
     token = make_token(str(user["_id"]), user["email"])
 
-    # 🔥 FIXED COOKIE
+    # 🔥 COOKIE FIX
     response.set_cookie(
         key="access_token",
         value=token,
