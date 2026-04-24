@@ -13,9 +13,11 @@ export const AuthPage = () => {
 
   const nav = useNavigate();
 
-  // ✅ FINAL FIXED SUBMIT FUNCTION
+  // ✅ FULL DEBUG + FIXED SUBMIT
   const submit = async (e) => {
     e.preventDefault();
+
+    console.log("🔥 SUBMIT WORKING"); // ✅ DEBUG
 
     setError('');
     setLoading(true);
@@ -24,6 +26,8 @@ export const AuthPage = () => {
       const API = "https://capitalcare-ai-finance-tracker.onrender.com";
 
       const endpoint = isLogin ? "/api/login" : "/api/register";
+
+      console.log("➡️ CALLING:", API + endpoint);
 
       const response = await fetch(`${API}${endpoint}`, {
         method: "POST",
@@ -35,16 +39,20 @@ export const AuthPage = () => {
             ? { email, password }
             : { name, email, password }
         ),
-        credentials: "include", // 🔥 VERY IMPORTANT
+        credentials: "include",
       });
 
+      console.log("📡 STATUS:", response.status);
+
       const data = await response.json();
+      console.log("📦 DATA:", data);
 
       if (!response.ok) {
         throw new Error(data.detail || "Request failed");
       }
 
-      // ✅ REDIRECT AFTER SUCCESS
+      console.log("✅ SUCCESS LOGIN");
+
       window.location.href = "/dashboard";
 
     } catch (err) {
@@ -75,7 +83,8 @@ export const AuthPage = () => {
             {isLogin ? 'Welcome back' : 'Create account'}
           </h1>
 
-          <form onSubmit={submit} className="space-y-3.5">
+          {/* ✅ FIXED FORM */}
+          <form onSubmit={submit} noValidate className="space-y-3.5">
 
             {!isLogin && (
               <input
@@ -120,9 +129,11 @@ export const AuthPage = () => {
               </p>
             )}
 
+            {/* ✅ FIXED BUTTON */}
             <button
               type="submit"
               disabled={loading}
+              onClick={() => console.log("🟢 BUTTON CLICKED")} // DEBUG
               className="w-full btn-coral h-12 text-sm"
             >
               {loading ? 'Please wait...' : isLogin ? 'Sign in' : 'Create account'}
