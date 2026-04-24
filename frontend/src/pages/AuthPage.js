@@ -13,11 +13,9 @@ export const AuthPage = () => {
 
   const nav = useNavigate();
 
-  // ✅ FIXED SUBMIT FUNCTION
+  // ✅ FINAL FIXED SUBMIT FUNCTION
   const submit = async (e) => {
     e.preventDefault();
-
-    console.log("🔥 LOGIN START");
 
     setError('');
     setLoading(true);
@@ -25,7 +23,7 @@ export const AuthPage = () => {
     try {
       const API = "https://capitalcare-ai-finance-tracker.onrender.com";
 
-      let endpoint = isLogin ? "/api/login" : "/api/register";
+      const endpoint = isLogin ? "/api/login" : "/api/register";
 
       const response = await fetch(`${API}${endpoint}`, {
         method: "POST",
@@ -37,28 +35,21 @@ export const AuthPage = () => {
             ? { email, password }
             : { name, email, password }
         ),
+        credentials: "include", // 🔥 VERY IMPORTANT
       });
 
-      console.log("📡 STATUS:", response.status);
-
       const data = await response.json();
-      console.log("📦 DATA:", data);
 
       if (!response.ok) {
         throw new Error(data.detail || "Request failed");
       }
 
-      // ✅ SAVE TOKEN (VERY IMPORTANT)
-      if (data.token) {
-        localStorage.setItem("token", data.token);
-      }
-
-      // ✅ REDIRECT
+      // ✅ REDIRECT AFTER SUCCESS
       window.location.href = "/dashboard";
 
     } catch (err) {
       console.log("❌ ERROR:", err);
-      setError(err.message || "Login failed");
+      setError("Failed to fetch");
     }
 
     setLoading(false);
