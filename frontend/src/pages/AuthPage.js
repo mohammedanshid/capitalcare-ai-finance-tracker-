@@ -15,9 +15,11 @@ export const AuthPage = () => {
   const { login, register } = useAuth();
   const nav = useNavigate();
 
-  // ✅ FIXED SUBMIT FUNCTION
+  // ✅ FIXED SUBMIT FUNCTION + DEBUG
   const submit = async (e) => {
     e.preventDefault();
+
+    console.log("🔥 FORM SUBMITTED"); // ✅ DEBUG
 
     setError('');
     setLoading(true);
@@ -26,6 +28,7 @@ export const AuthPage = () => {
       let res;
 
       if (isLogin) {
+        console.log("➡️ Trying login...");
         res = await login(email, password);
       } else {
         if (!name.trim()) {
@@ -33,18 +36,20 @@ export const AuthPage = () => {
           setLoading(false);
           return;
         }
+        console.log("➡️ Trying register...");
         res = await register(name, email, password);
       }
 
+      console.log("✅ RESPONSE:", res);
+
       if (res.success) {
-        // ✅ FORCE REDIRECT
         window.location.href = "/dashboard";
       } else {
         setError(res.error || "Something went wrong");
       }
 
     } catch (err) {
-      console.log(err);
+      console.log("❌ ERROR:", err);
       setError("Login failed");
     }
 
@@ -116,13 +121,16 @@ export const AuthPage = () => {
               </p>
             )}
 
+            {/* ✅ DEBUG BUTTON CLICK */}
             <button
               type="submit"
               disabled={loading}
+              onClick={() => console.log("🟢 BUTTON CLICKED")}
               className="w-full btn-coral h-12 text-sm"
             >
               {loading ? 'Please wait...' : isLogin ? 'Sign in' : 'Create account'}
             </button>
+
           </form>
 
           <p className="mt-4 text-center text-xs">
