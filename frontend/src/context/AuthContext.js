@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
 
 const AuthContext = createContext();
@@ -9,27 +9,45 @@ const API = "https://capitalcare-ai-finance-tracker.onrender.com";
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  // ✅ LOGIN
-  const login = async (email, password) => {
+  // ✅ IMPORTANT: allow cookies
+  axios.defaults.withCredentials = true;
+
+  useEffect(() => {
+    checkAuth();
+  }, []);
+
+  // ✅ GET USER FROM COOKIE
+  const checkAuth = async () => {
     try {
-      console.log("LOGIN FUNCTION CALLED"); // 👈 DEBUG
-
-      const res = await axios.post(`${API}/api/login`, {
-        email,
-        password,
+      const { data } = await axios.get(`${API}/api/me`, {
+        withCredentials: true,
       });
 
-      console.log("LOGIN RESPONSE:", res.data); // 👈 DEBUG
+      setUser(data);
+    } catch (err) {
+      console.log("Auth check failed:", err);
+      setUser(null);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-      // ✅ SAVE TOKEN
-      localStorage.setItem("token", res.data.token);
+  // ✅ LOGIN (NO TOKEN STORAGE)
+  const login = async (email, password) => {
+    try {
+      await axios.post(
+        `${API}/api/login`,
+        { email, password },
+        { withCredentials: true }
+      );
+
+      await checkAuth();
 
       return { success: true };
-
     } catch (error) {
-      console.log("LOGIN ERROR:", error.response?.data || error.message);
-
+      console.log("LOGIN ERROR:", error);
       return {
         success: false,
         error: error.response?.data?.detail || "Login failed",
@@ -40,16 +58,15 @@ export const AuthProvider = ({ children }) => {
   // ✅ REGISTER
   const register = async (name, email, password) => {
     try {
-      const res = await axios.post(`${API}/api/register`, {
-        name,
-        email,
-        password,
-      });
+      await axios.post(
+        `${API}/api/register`,
+        { name, email, password },
+        { withCredentials: true }
+      );
 
-      localStorage.setItem("token", res.data.token);
+      await checkAuth();
 
       return { success: true };
-
     } catch (error) {
       return {
         success: false,
@@ -60,19 +77,11 @@ export const AuthProvider = ({ children }) => {
 
   // ✅ LOGOUT
   const logout = () => {
-    localStorage.removeItem("token");
     setUser(null);
   };
 
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        login,
-        register,
-        logout,
-      }}
-    >
+    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
       {children}
     </AuthContext.Provider>
   );
