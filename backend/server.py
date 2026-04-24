@@ -31,7 +31,7 @@ JWT_ALGORITHM = "HS256"
 app = FastAPI()
 api = APIRouter(prefix="/api")
 
-# ================= CORS (FIXED) =================
+# ================= CORS =================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -45,7 +45,6 @@ app.add_middleware(
 )
 
 # ================= PLAN SYSTEM =================
-
 PLAN_FEATURES = {
     "free": ["transactions", "dashboard"],
     "pro": ["transactions", "dashboard", "export", "daily_limit", "weekly_digest"],
@@ -55,10 +54,7 @@ PLAN_FEATURES = {
 def check_feature(user, feature):
     plan = user.get("plan", "free")
     if feature not in PLAN_FEATURES.get(plan, []):
-        raise HTTPException(
-            status_code=403,
-            detail=f"{feature} locked in {plan} plan"
-        )
+        raise HTTPException(403, f"{feature} locked in {plan} plan")
 
 # ================= AUTH =================
 
@@ -79,7 +75,7 @@ def make_token(uid, email):
         algorithm=JWT_ALGORITHM
     )
 
-# ✅ SUPPORT BOTH COOKIE + HEADER
+# ✅ COOKIE + HEADER SUPPORT
 async def current_user(request: Request):
     token = request.cookies.get("access_token")
 
@@ -89,20 +85,20 @@ async def current_user(request: Request):
             token = auth.split(" ")[1]
 
     if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(401, "Not authenticated")
 
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
 
         if not user:
-            raise HTTPException(status_code=401, detail="User not found")
+            raise HTTPException(401, "User not found")
 
         user["_id"] = str(user["_id"])
         return user
 
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    except:
+        raise HTTPException(401, "Invalid token")
 
 # ================= MODELS =================
 
@@ -129,7 +125,7 @@ async def register(data: Register, response: Response):
         "name": data.name,
         "email": data.email.lower(),
         "password": hash_pw(data.password),
-        "plan": "free",  # ✅ DEFAULT PLAN
+        "plan": "free",
         "created_at": datetime.now(timezone.utc)
     }
 
@@ -144,14 +140,22 @@ async def register(data: Register, response: Response):
         samesite="None"
     )
 
-    return {"message": "Registered", "plan": "free"}
+    return {
+        "message": "Registered",
+        "user": {
+            "id": str(res.inserted_id),
+            "name": data.name,
+            "email": data.email,
+            "plan": "free"
+        }
+    }
 
 @api.post("/login")
 async def login(data: Login, response: Response):
     user = await db.users.find_one({"email": data.email.lower()})
 
     if not user or not verify_pw(data.password, user["password"]):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(401, "Invalid credentials")
 
     token = make_token(str(user["_id"]), user["email"])
 
@@ -163,9 +167,15 @@ async def login(data: Login, response: Response):
         samesite="None"
     )
 
+    # ✅ IMPORTANT FIX (RETURN USER)
     return {
         "message": "Logged in",
-        "plan": user.get("plan", "free")
+        "user": {
+            "id": str(user["_id"]),
+            "name": user["name"],
+            "email": user["email"],
+            "plan": user.get("plan", "free")
+        }
     }
 
 @api.get("/me")
@@ -219,17 +229,12 @@ async def dashboard(user=Depends(current_user)):
         "plan": user.get("plan", "free")
     }
 
-# ================= EXTRA FEATURES =================
+# ================= EXTRA =================
 
 @api.get("/daily-limit")
 async def daily_limit(user=Depends(current_user)):
     check_feature(user, "daily_limit")
-    return {
-        "limit": 500,
-        "remaining": 300,
-        "spent_today": 200,
-        "percentage": 40
-    }
+    return {"limit": 500, "remaining": 300, "spent_today": 200, "percentage": 40}
 
 @api.get("/weekly-digest")
 async def weekly_digest(user=Depends(current_user)):
@@ -265,7 +270,5 @@ async def upgrade(plan: str, user=Depends(current_user)):
 @app.get("/")
 def root():
     return {"status": "Server running 🚀"}
-
-# ================= INCLUDE =================
 
 app.include_router(api)
