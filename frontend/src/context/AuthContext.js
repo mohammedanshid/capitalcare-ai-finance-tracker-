@@ -4,8 +4,11 @@ import axios from 'axios';
 const AuthContext = createContext();
 export const useAuth = () => useContext(AuthContext);
 
-// ✅ HARDCODE YOUR WORKING BACKEND
+// ✅ BACKEND URL
 const API = "https://capitalcare-ai-finance-tracker.onrender.com";
+
+// ✅ IMPORTANT: ENABLE COOKIES FOR ALL REQUESTS
+axios.defaults.withCredentials = true;
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -15,21 +18,11 @@ export const AuthProvider = ({ children }) => {
     checkAuth();
   }, []);
 
-  // ✅ CHECK USER FROM TOKEN
+  // ✅ CHECK USER USING COOKIE
   const checkAuth = async () => {
     try {
-      const token = localStorage.getItem("token");
-
-      if (!token) {
-        setUser(null);
-        setLoading(false);
-        return;
-      }
-
       const { data } = await axios.get(`${API}/api/me`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        withCredentials: true
       });
 
       setUser(data);
@@ -41,18 +34,16 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // ✅ LOGIN
+  // ✅ LOGIN (COOKIE BASED)
   const login = async (email, password) => {
     try {
-      const { data } = await axios.post(`${API}/api/login`, {
+      await axios.post(`${API}/api/login`, {
         email,
         password,
+      }, {
+        withCredentials: true
       });
 
-      // SAVE TOKEN
-      localStorage.setItem("token", data.token);
-
-      // GET USER AFTER LOGIN
       await checkAuth();
 
       return { success: true };
@@ -64,17 +55,16 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // ✅ REGISTER
+  // ✅ REGISTER (COOKIE BASED)
   const register = async (name, email, password) => {
     try {
-      const { data } = await axios.post(`${API}/api/register`, {
+      await axios.post(`${API}/api/register`, {
         name,
         email,
         password,
+      }, {
+        withCredentials: true
       });
-
-      // SAVE TOKEN
-      localStorage.setItem("token", data.token);
 
       await checkAuth();
 
@@ -88,8 +78,13 @@ export const AuthProvider = ({ children }) => {
   };
 
   // ✅ LOGOUT
-  const logout = () => {
-    localStorage.removeItem("token");
+  const logout = async () => {
+    try {
+      await axios.post(`${API}/api/logout`, {}, {
+        withCredentials: true
+      });
+    } catch (e) {}
+
     setUser(null);
   };
 
