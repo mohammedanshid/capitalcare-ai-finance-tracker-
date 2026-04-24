@@ -13,11 +13,11 @@ export const AuthPage = () => {
 
   const nav = useNavigate();
 
-  // ✅ FINAL WORKING SUBMIT
+  // ✅ FIXED SUBMIT FUNCTION
   const submit = async (e) => {
     e.preventDefault();
 
-    console.log("🔥 SUBMIT TRIGGERED");
+    console.log("🔥 LOGIN START");
 
     setError('');
     setLoading(true);
@@ -25,56 +25,36 @@ export const AuthPage = () => {
     try {
       const API = "https://capitalcare-ai-finance-tracker.onrender.com";
 
-      if (isLogin) {
-        console.log("➡️ CALLING LOGIN API");
+      let endpoint = isLogin ? "/api/login" : "/api/register";
 
-        const response = await fetch(`${API}/api/login`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            email,
-            password,
-          }),
-          credentials: "include", // ✅ IMPORTANT
-        });
+      const response = await fetch(`${API}${endpoint}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(
+          isLogin
+            ? { email, password }
+            : { name, email, password }
+        ),
+      });
 
-        const data = await response.json();
-        console.log("✅ LOGIN RESPONSE:", data);
+      console.log("📡 STATUS:", response.status);
 
-        if (!response.ok) {
-          throw new Error(data.detail || "Login failed");
-        }
+      const data = await response.json();
+      console.log("📦 DATA:", data);
 
-        window.location.href = "/dashboard";
-        return;
-
-      } else {
-        console.log("➡️ CALLING REGISTER API");
-
-        const response = await fetch(`${API}/api/register`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            name,
-            email,
-            password,
-          }),
-          credentials: "include",
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(data.detail || "Register failed");
-        }
-
-        window.location.href = "/dashboard";
-        return;
+      if (!response.ok) {
+        throw new Error(data.detail || "Request failed");
       }
+
+      // ✅ SAVE TOKEN (VERY IMPORTANT)
+      if (data.token) {
+        localStorage.setItem("token", data.token);
+      }
+
+      // ✅ REDIRECT
+      window.location.href = "/dashboard";
 
     } catch (err) {
       console.log("❌ ERROR:", err);
@@ -152,7 +132,6 @@ export const AuthPage = () => {
             <button
               type="submit"
               disabled={loading}
-              onClick={() => console.log("🟢 BUTTON CLICKED")}
               className="w-full btn-coral h-12 text-sm"
             >
               {loading ? 'Please wait...' : isLogin ? 'Sign in' : 'Create account'}
