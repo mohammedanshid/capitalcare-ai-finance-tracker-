@@ -34,13 +34,13 @@ api = APIRouter(prefix="/api")
 # ================= CORS (🔥 FINAL FIX) =================
 origins = [
     "http://localhost:3000",
-    "https://capitalcare-ai-finance-tracker.vercel.app",
+    "https://capitalcare-ai-finance-tracker-7xvuafkv9.vercel.app",  # ✅ YOUR REAL FRONTEND
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"https://.*\.vercel\.app",  # ✅ ALLOW ALL VERCEL DEPLOYS
+    allow_origin_regex=r"https://.*\.vercel\.app",  # ✅ allow all vercel deployments
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -138,7 +138,6 @@ async def register(data: Register, response: Response):
     res = await db.users.insert_one(user)
     token = make_token(str(res.inserted_id), data.email)
 
-    # 🔥 COOKIE FIX
     response.set_cookie(
         key="access_token",
         value=token,
@@ -158,7 +157,6 @@ async def login(data: Login, response: Response):
 
     token = make_token(str(user["_id"]), user["email"])
 
-    # 🔥 COOKIE FIX
     response.set_cookie(
         key="access_token",
         value=token,
