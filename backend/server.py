@@ -5,7 +5,7 @@ import os
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr
@@ -77,16 +77,14 @@ def make_token(uid, email):
         algorithm=JWT_ALGORITHM
     )
 
+# ✅ UPDATED: ONLY HEADER TOKEN (NO COOKIE)
 async def current_user(request: Request):
-    token = request.cookies.get("access_token")
+    auth = request.headers.get("Authorization")
 
-    if not token:
-        auth = request.headers.get("Authorization")
-        if auth and "Bearer " in auth:
-            token = auth.split(" ")[1]
-
-    if not token:
+    if not auth or "Bearer " not in auth:
         raise HTTPException(401, "Not authenticated")
+
+    token = auth.split(" ")[1]
 
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
@@ -121,7 +119,7 @@ class Transaction(BaseModel):
 # ================= AUTH ROUTES =================
 
 @api.post("/register")
-async def register(data: Register, response: Response):
+async def register(data: Register):
     existing = await db.users.find_one({"email": data.email.lower()})
     if existing:
         raise HTTPException(400, "Email already registered")
@@ -137,20 +135,13 @@ async def register(data: Register, response: Response):
     res = await db.users.insert_one(user)
     token = make_token(str(res.inserted_id), data.email)
 
-    # ✅ FIXED COOKIE
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        domain=".onrender.com"
-    )
-
-    return {"message": "Registered"}
+    return {
+        "message": "Registered",
+        "token": token
+    }
 
 @api.post("/login")
-async def login(data: Login, response: Response):
+async def login(data: Login):
     user = await db.users.find_one({"email": data.email.lower()})
 
     if not user or not verify_pw(data.password, user["password"]):
@@ -158,17 +149,10 @@ async def login(data: Login, response: Response):
 
     token = make_token(str(user["_id"]), user["email"])
 
-    # ✅ FIXED COOKIE
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        domain=".onrender.com"
-    )
-
-    return {"message": "Logged in"}
+    return {
+        "message": "Logged in",
+        "token": token
+    }
 
 @api.get("/me")
 async def me(user=Depends(current_user)):
