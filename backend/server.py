@@ -6,7 +6,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends
-from starlette.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware  # ✅ FIXED IMPORT
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr
 from datetime import datetime, timezone, timedelta
@@ -35,12 +35,13 @@ api = APIRouter(prefix="/api")
 origins = [
     "http://localhost:3000",
     "https://capitalcare-ai-finance-tracker-7xvuafkv9.vercel.app",
+    "https://capitalcare-ai-finance-tracker-kcmanql3u.vercel.app",  # ✅ ADDED
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origin_regex=r"https://.*\.vercel\.app",  # ✅ IMPORTANT
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -77,7 +78,6 @@ def make_token(uid, email):
         algorithm=JWT_ALGORITHM
     )
 
-# ✅ UPDATED: ONLY HEADER TOKEN (NO COOKIE)
 async def current_user(request: Request):
     auth = request.headers.get("Authorization")
 
@@ -135,10 +135,7 @@ async def register(data: Register):
     res = await db.users.insert_one(user)
     token = make_token(str(res.inserted_id), data.email)
 
-    return {
-        "message": "Registered",
-        "token": token
-    }
+    return {"message": "Registered", "token": token}
 
 @api.post("/login")
 async def login(data: Login):
@@ -149,10 +146,7 @@ async def login(data: Login):
 
     token = make_token(str(user["_id"]), user["email"])
 
-    return {
-        "message": "Logged in",
-        "token": token
-    }
+    return {"message": "Logged in", "token": token}
 
 @api.get("/me")
 async def me(user=Depends(current_user)):
