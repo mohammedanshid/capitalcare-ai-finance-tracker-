@@ -3,8 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Plus, Trash, MagnifyingGlass } from '@phosphor-icons/react';
 import { formatINR } from '../utils/inr';
 import { toast } from 'sonner';
-import axios from 'axios';
-const API = process.env.REACT_APP_BACKEND_URL;
+import api from "../api"; // adjust path if needed
 
 const CATS_INC = ['Salary','Freelance','Investment','Gift','Other'];
 const CATS_EXP = ['Groceries','Dining','Rent','EMI','Subscriptions','Transport','Shopping','Entertainment','Healthcare','Other'];
@@ -19,16 +18,26 @@ export const TransactionsPage = () => {
   const [smsText, setSmsText] = useState('');
 
   useEffect(() => { fetch_(); }, []);
-  const fetch_ = async () => { try { const { data } = await axios.get(`${API}/api/individual/transactions`, { withCredentials: true }); setTxns(data); } catch {} };
+  const fetch_ = async () => { try { const { data } = await api.get(`/api/transactions`); setTxns(data); } catch {} };
   const submit = async (e) => {
     e.preventDefault(); if (!form.amount) return; setLoading(true);
-    try { await axios.post(`${API}/api/individual/transactions`, { ...form, amount: parseFloat(form.amount) }, { withCredentials: true }); toast.success('Added!'); setShowForm(false); setForm({ type:'expense', amount:'', category:'Groceries', description:'', date: new Date().toISOString().split('T')[0] }); fetch_(); }
+    try {
+      await api.post(`/api/transactions`, {
+        title: form.category,
+        amount: parseFloat(form.amount),
+        type: form.type,
+        category: form.category,
+        description: form.description,
+        date: form.date,
+      });
+      toast.success('Added!'); setShowForm(false); setForm({ type:'expense', amount:'', category:'Groceries', description:'', date: new Date().toISOString().split('T')[0] }); fetch_();
+    }
     catch (err) { toast.error(err.response?.data?.detail || 'Failed'); } finally { setLoading(false); }
   };
-  const del = async (id) => { if (!window.confirm('Delete?')) return; try { await axios.delete(`${API}/api/individual/transactions/${id}`, { withCredentials: true }); toast.success('Deleted'); fetch_(); } catch { toast.error('Failed'); } };
+  const del = async (id) => { if (!window.confirm('Delete?')) return; try { await api.delete(`/api/transactions/${id}`); toast.success('Deleted'); fetch_(); } catch { toast.error('Failed'); } };
   const parseSMS = async () => {
     if (!smsText.trim()) return;
-    try { const { data } = await axios.post(`${API}/api/sms/parse`, { text: smsText }, { withCredentials: true }); if (data.parsed) { setForm(f=>({...f,amount:String(data.amount||''),type:data.type==='credit'?'income':'expense',description:data.merchant||''})); setShowForm(true); toast.success('SMS parsed!'); } else toast.error('Could not parse'); } catch { toast.error('Failed'); }
+    try { const { data } = await api.post(`/api/sms/parse`, { text: smsText }); if (data.parsed) { setForm(f=>({...f,amount:String(data.amount||''),type:data.type==='credit'?'income':'expense',description:data.merchant||''})); setShowForm(true); toast.success('SMS parsed!'); } else toast.error('Could not parse'); } catch { toast.error('Failed'); }
   };
   const filtered = txns.filter(t => !search || t.category.toLowerCase().includes(search.toLowerCase()) || (t.description||'').toLowerCase().includes(search.toLowerCase()));
   const cats = form.type === 'income' ? CATS_INC : CATS_EXP;
