@@ -1,14 +1,16 @@
 import React, { useEffect, useState } from "react";
 import { useAuth } from "../context/AuthContext";
-import { useNavigate } from "react-router-dom";
 import api from "../api";
+import {
+  PieChart, Pie, Cell, Tooltip, ResponsiveContainer
+} from "recharts";
+
+const COLORS = ["#4CAF50", "#F44336"];
 
 export const Dashboard = () => {
   const { user, logout } = useAuth();
-  const nav = useNavigate();
 
   const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchDashboard();
@@ -16,97 +18,102 @@ export const Dashboard = () => {
 
   const fetchDashboard = async () => {
     try {
-      console.log("📊 Loading dashboard...");
       const res = await api.get("/api/dashboard");
-
-      console.log("📊 Data:", res.data);
       setData(res.data);
     } catch (err) {
-      console.log("❌ Error:", err);
-    } finally {
-      setLoading(false);
+      console.log(err);
     }
   };
 
-  const addTransaction = async () => {
-    try {
-      await api.post("/api/transactions", {
-        title: "Food",
-        amount: 200,
-        type: "expense",
-        category: "food",
-      });
-
-      alert("Transaction added ✅");
-      fetchDashboard();
-    } catch (err) {
-      console.log("❌ Error:", err);
-    }
-  };
-
-  if (loading) {
-    return <div style={{ padding: 20 }}>Loading dashboard...</div>;
-  }
+  const chartData = [
+    { name: "Income", value: data?.income || 0 },
+    { name: "Expenses", value: data?.expenses || 0 },
+  ];
 
   return (
-    <div style={{ padding: 20, fontFamily: "sans-serif" }}>
-      {/* HEADER */}
-      <div style={{ display: "flex", justifyContent: "space-between" }}>
-        <h2>Welcome, {user?.name}</h2>
-        <button onClick={logout}>Logout</button>
-      </div>
+    <div className="flex min-h-screen bg-gray-100">
 
-      {/* STATS */}
-      <div style={{ display: "flex", gap: 20, marginTop: 20 }}>
-        <div style={card}>
-          <h4>Balance</h4>
-          <p>₹ {data?.balance || 0}</p>
+      {/* SIDEBAR */}
+      <div className="w-64 bg-white shadow-lg p-5 flex flex-col justify-between">
+        <div>
+          <h2 className="text-xl font-bold mb-8">💰 CapitalCare</h2>
+
+          <nav className="space-y-4">
+            <p className="text-gray-700 cursor-pointer">🏠 Dashboard</p>
+            <p className="text-gray-700 cursor-pointer">📊 Analytics</p>
+            <p className="text-gray-700 cursor-pointer">🎯 Goals</p>
+            <p className="text-gray-700 cursor-pointer">💳 Transactions</p>
+          </nav>
         </div>
 
-        <div style={card}>
-          <h4>Income</h4>
-          <p>₹ {data?.income || 0}</p>
-        </div>
-
-        <div style={card}>
-          <h4>Expenses</h4>
-          <p>₹ {data?.expenses || 0}</p>
-        </div>
+        <button
+          onClick={logout}
+          className="bg-red-500 text-white p-2 rounded-lg"
+        >
+          Logout
+        </button>
       </div>
 
-      {/* ACTION */}
-      <div style={{ marginTop: 20 }}>
-        <button onClick={addTransaction}>Add Transaction</button>
-      </div>
+      {/* MAIN */}
+      <div className="flex-1 p-6">
 
-      {/* TRANSACTIONS LIST */}
-      <div style={{ marginTop: 30 }}>
-        <h3>Recent Transactions</h3>
+        {/* HEADER */}
+        <div className="flex justify-between mb-6">
+          <h1 className="text-2xl font-bold">
+            Welcome, {user?.name}
+          </h1>
+        </div>
 
-        {data?.transactions?.length === 0 && <p>No transactions</p>}
+        {/* CARDS */}
+        <div className="grid grid-cols-3 gap-4 mb-6">
+          <Card title="Balance" value={data?.balance} />
+          <Card title="Income" value={data?.income} />
+          <Card title="Expenses" value={data?.expenses} />
+        </div>
 
-        {data?.transactions?.map((t, i) => (
-          <div key={i} style={txn}>
-            <span>{t.title}</span>
-            <span>₹ {t.amount}</span>
-          </div>
-        ))}
+        {/* CHART */}
+        <div className="bg-white p-4 rounded-xl shadow mb-6">
+          <h2 className="mb-4 font-semibold">
+            Income vs Expenses
+          </h2>
+
+          <ResponsiveContainer width="100%" height={250}>
+            <PieChart>
+              <Pie data={chartData} dataKey="value">
+                {chartData.map((_, i) => (
+                  <Cell key={i} fill={COLORS[i]} />
+                ))}
+              </Pie>
+              <Tooltip />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* TRANSACTIONS */}
+        <div className="bg-white p-4 rounded-xl shadow">
+          <h2 className="mb-4 font-semibold">
+            Recent Transactions
+          </h2>
+
+          {data?.transactions?.map((t, i) => (
+            <div
+              key={i}
+              className="flex justify-between py-2 border-b"
+            >
+              <span>{t.title}</span>
+              <span>₹ {t.amount}</span>
+            </div>
+          ))}
+        </div>
+
       </div>
     </div>
   );
 };
 
-// styles
-const card = {
-  padding: 15,
-  border: "1px solid #ddd",
-  borderRadius: 10,
-  width: 150,
-};
-
-const txn = {
-  display: "flex",
-  justifyContent: "space-between",
-  borderBottom: "1px solid #eee",
-  padding: 10,
-};
+const Card = ({ title, value }) => (
+  <div className="bg-white p-4 rounded-xl shadow">
+    <h3 className="text-gray-500">{title}</h3>
+    <p className="text-xl font-bold">₹ {value || 0}</p>
+  </div>
+);
