@@ -1,78 +1,112 @@
-import React, { useState, useEffect } from 'react';
-import { useAuth } from '../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useState } from "react";
+import { useAuth } from "../context/AuthContext";
+import { useNavigate } from "react-router-dom";
 import api from "../api";
 
 export const Dashboard = () => {
   const { user, logout } = useAuth();
   const nav = useNavigate();
 
-  const [d, setD] = useState(null);
+  const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchAll();
+    fetchDashboard();
   }, []);
 
-  const fetchAll = async () => {
+  const fetchDashboard = async () => {
     try {
-      console.log("📊 Fetching dashboard data...");
-
+      console.log("📊 Loading dashboard...");
       const res = await api.get("/api/dashboard");
 
-      console.log("📊 Dashboard:", res.data);
-
-      setD(res.data);
+      console.log("📊 Data:", res.data);
+      setData(res.data);
     } catch (err) {
-      console.log("❌ Dashboard error:", err);
+      console.log("❌ Error:", err);
     } finally {
       setLoading(false);
     }
   };
 
-  // ✅ ADD TRANSACTION (TEST BUTTON)
-  const addTestTransaction = async () => {
+  const addTransaction = async () => {
     try {
       await api.post("/api/transactions", {
-        title: "Test",
-        amount: 100,
+        title: "Food",
+        amount: 200,
         type: "expense",
-        category: "general"
+        category: "food",
       });
 
       alert("Transaction added ✅");
-      fetchAll();
+      fetchDashboard();
     } catch (err) {
-      console.log("❌ Add error:", err);
-      alert("Failed ❌");
+      console.log("❌ Error:", err);
     }
   };
 
+  if (loading) {
+    return <div style={{ padding: 20 }}>Loading dashboard...</div>;
+  }
+
   return (
-    <div style={{ padding: 20 }}>
-      <h1>Dashboard</h1>
+    <div style={{ padding: 20, fontFamily: "sans-serif" }}>
+      {/* HEADER */}
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <h2>Welcome, {user?.name}</h2>
+        <button onClick={logout}>Logout</button>
+      </div>
 
-      {loading ? (
-        <p>Loading...</p>
-      ) : (
-        <>
-          <h3>Welcome: {user?.name}</h3>
+      {/* STATS */}
+      <div style={{ display: "flex", gap: 20, marginTop: 20 }}>
+        <div style={card}>
+          <h4>Balance</h4>
+          <p>₹ {data?.balance || 0}</p>
+        </div>
 
-          <h4>Balance: {d?.balance}</h4>
-          <h4>Income: {d?.income}</h4>
-          <h4>Expenses: {d?.expenses}</h4>
+        <div style={card}>
+          <h4>Income</h4>
+          <p>₹ {data?.income || 0}</p>
+        </div>
 
-          <button onClick={addTestTransaction}>
-            Add Test Transaction
-          </button>
+        <div style={card}>
+          <h4>Expenses</h4>
+          <p>₹ {data?.expenses || 0}</p>
+        </div>
+      </div>
 
-          <br /><br />
+      {/* ACTION */}
+      <div style={{ marginTop: 20 }}>
+        <button onClick={addTransaction}>Add Transaction</button>
+      </div>
 
-          <button onClick={logout}>
-            Logout
-          </button>
-        </>
-      )}
+      {/* TRANSACTIONS LIST */}
+      <div style={{ marginTop: 30 }}>
+        <h3>Recent Transactions</h3>
+
+        {data?.transactions?.length === 0 && <p>No transactions</p>}
+
+        {data?.transactions?.map((t, i) => (
+          <div key={i} style={txn}>
+            <span>{t.title}</span>
+            <span>₹ {t.amount}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
+};
+
+// styles
+const card = {
+  padding: 15,
+  border: "1px solid #ddd",
+  borderRadius: 10,
+  width: 150,
+};
+
+const txn = {
+  display: "flex",
+  justifyContent: "space-between",
+  borderBottom: "1px solid #eee",
+  padding: 10,
 };
