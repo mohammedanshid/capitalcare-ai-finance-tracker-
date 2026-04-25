@@ -13,7 +13,6 @@ export const AuthPage = () => {
 
   const nav = useNavigate();
 
-  // ✅ CLEAN + FIXED SUBMIT
   const submit = async (e) => {
     e.preventDefault();
 
@@ -34,27 +33,36 @@ export const AuthPage = () => {
         headers: {
           "Content-Type": "application/json",
         },
+        // ✅ IMPORTANT: correct JSON body
         body: JSON.stringify(
           isLogin
-            ? { email, password }
-            : { name, email, password }
+            ? {
+                email: email.trim(),
+                password: password.trim(),
+              }
+            : {
+                name: name.trim(),
+                email: email.trim(),
+                password: password.trim(),
+              }
         ),
-        credentials: "include",
       });
 
       const data = await response.json();
 
-      // ✅ FIXED ERROR HANDLING
       if (!response.ok) {
         throw new Error(data.detail || data.message || "Request failed");
       }
 
-      // ✅ SUCCESS
-      window.location.href = "/dashboard";
+      // ✅ SAVE TOKEN (VERY IMPORTANT)
+      localStorage.setItem("token", data.token);
+
+      // ✅ REDIRECT
+      nav("/dashboard");
 
     } catch (err) {
       console.log("❌ ERROR:", err);
-      setError(err.message || "Something went wrong"); // ✅ FIXED
+      setError(err.message || "Something went wrong");
     }
 
     setLoading(false);
@@ -119,7 +127,6 @@ export const AuthPage = () => {
               </button>
             </div>
 
-            {/* ✅ ERROR MESSAGE */}
             {error && (
               <p style={{ color: "red", fontSize: 13 }}>
                 {error}
