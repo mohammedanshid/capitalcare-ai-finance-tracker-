@@ -7,9 +7,6 @@ export const useAuth = () => useContext(AuthContext);
 // ✅ YOUR BACKEND
 const API = "https://capitalcare-ai-finance-tracker.onrender.com";
 
-// ✅ GLOBAL AXIOS CONFIG (VERY IMPORTANT)
-axios.defaults.withCredentials = true;
-
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -18,10 +15,23 @@ export const AuthProvider = ({ children }) => {
     checkAuth();
   }, []);
 
-  // ✅ GET USER FROM COOKIE
+  // ✅ GET USER USING TOKEN
   const checkAuth = async () => {
     try {
-      const { data } = await axios.get(`${API}/api/me`);
+      const token = localStorage.getItem("token");
+
+      if (!token) {
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+
+      const { data } = await axios.get(`${API}/api/me`, {
+        headers: {
+          Authorization: `Bearer ${token}`, // ✅ IMPORTANT
+        },
+      });
+
       setUser(data);
     } catch (err) {
       console.log("Auth check failed:", err);
@@ -34,10 +44,13 @@ export const AuthProvider = ({ children }) => {
   // ✅ LOGIN
   const login = async (email, password) => {
     try {
-      await axios.post(`${API}/api/login`, {
+      const { data } = await axios.post(`${API}/api/login`, {
         email,
         password,
       });
+
+      // ✅ SAVE TOKEN
+      localStorage.setItem("token", data.token);
 
       await checkAuth();
 
@@ -54,11 +67,14 @@ export const AuthProvider = ({ children }) => {
   // ✅ REGISTER
   const register = async (name, email, password) => {
     try {
-      await axios.post(`${API}/api/register`, {
+      const { data } = await axios.post(`${API}/api/register`, {
         name,
         email,
         password,
       });
+
+      // ✅ SAVE TOKEN
+      localStorage.setItem("token", data.token);
 
       await checkAuth();
 
@@ -73,6 +89,7 @@ export const AuthProvider = ({ children }) => {
 
   // ✅ LOGOUT
   const logout = () => {
+    localStorage.removeItem("token"); // ✅ CLEAR TOKEN
     setUser(null);
   };
 
