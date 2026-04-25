@@ -14,18 +14,18 @@ export const IndividualGoals = () => {
   const [planner, setPlanner] = useState({ monthly:'', goal: null });
 
   useEffect(() => { fetch_(); }, []);
-  const fetch_ = async () => { try { const { data } = await axios.get(`${API}/api/individual/goals`, { withCredentials: true }); setGoals(data); } catch {} };
+  const fetch_ = async () => { try { const { data } = await axios.get(`${API}/api/goals`, { withCredentials: true }); setGoals(data); } catch {} };
 
   const submit = async (e) => {
     e.preventDefault();
-    try { await axios.post(`${API}/api/individual/goals`, { ...form, target: parseFloat(form.target), saved: parseFloat(form.saved||'0') }, { withCredentials: true }); toast.success('Goal created!'); setShowForm(false); setForm({ name:'', target:'', saved:'0', deadline:'' }); fetch_(); }
+    try { await axios.post(`${API}/api/goals`, { ...form, target: parseFloat(form.target), saved: parseFloat(form.saved||'0') }, { withCredentials: true }); toast.success('Goal created!'); setShowForm(false); setForm({ name:'', target:'', saved:'0', deadline:'' }); fetch_(); }
     catch { toast.error('Failed'); }
   };
 
-  const del = async (id) => { try { await axios.delete(`${API}/api/individual/goals/${id}`, { withCredentials: true }); toast.success('Deleted'); fetch_(); } catch {} };
+  const del = async (id) => { try { await axios.delete(`${API}/api/goals/${id}`, { withCredentials: true }); toast.success('Deleted'); fetch_(); } catch {} };
 
   const addSavings = async (g, amt) => {
-    try { await axios.put(`${API}/api/individual/goals/${g.id}`, { ...g, saved: g.saved + amt }, { withCredentials: true }); toast.success(`Added ${formatINR(amt)}`); fetch_(); }
+    try { await axios.put(`${API}/api/goals/${g.id}`, { ...g, saved: g.saved + amt }, { withCredentials: true }); toast.success(`Added ${formatINR(amt)}`); fetch_(); }
     catch { toast.error('Failed'); }
   };
 
