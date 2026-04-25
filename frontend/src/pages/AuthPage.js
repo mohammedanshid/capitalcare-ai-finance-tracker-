@@ -28,12 +28,17 @@ export const AuthPage = () => {
         throw new Error("Name is required");
       }
 
+      console.log("📤 Sending:", {
+        email,
+        password,
+        name
+      });
+
       const response = await fetch(`${API}${endpoint}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        // ✅ IMPORTANT: correct JSON body
         body: JSON.stringify(
           isLogin
             ? {
@@ -50,15 +55,19 @@ export const AuthPage = () => {
 
       const data = await response.json();
 
+      console.log("📥 Response:", data);
+
       if (!response.ok) {
         throw new Error(data.detail || data.message || "Request failed");
       }
 
-      // ✅ SAVE TOKEN (VERY IMPORTANT)
+      // ✅ SAVE TOKEN
       localStorage.setItem("token", data.token);
 
-      // ✅ REDIRECT
-      nav("/dashboard");
+      console.log("✅ TOKEN SAVED:", data.token);
+
+      // 🔥 IMPORTANT: FORCE RELOAD (fix auth issue)
+      window.location.href = "/dashboard";
 
     } catch (err) {
       console.log("❌ ERROR:", err);
