@@ -19,43 +19,26 @@ export const Dashboard = () => {
   const [d, setD] = useState(null);
   const [loading, setLoading] = useState(true);
   const [chatOpen, setChatOpen] = useState(false);
-  const [alerts, setAlerts] = useState([]);
-  const [forecast, setForecast] = useState(null);
-  const [healthScore, setHealthScore] = useState(null);
-  const [dailyLimit, setDailyLimit] = useState(null);
-  const [digest, setDigest] = useState(null);
   const [gateFeature, setGateFeature] = useState(null);
   const plan = user?.plan || 'free';
 
   useEffect(() => { fetchAll(); }, []);
 
+  // ✅ SIMPLIFIED: only the 2 endpoints your backend actually has
   const fetchAll = async () => {
     try {
       console.log("📊 Fetching all dashboard data...");
 
-      const [dash, alertsRes, forecastRes, healthRes, dailyRes, digestRes] = await Promise.all([
-        // ✅ api replaces axios, no withCredentials needed (token sent automatically)
-        api.get("/api/individual/dashboard"),
-        api.get("/api/alerts/individual").catch(() => ({ data: [] })),
-        api.get("/api/forecast/individual").catch(() => ({ data: null })),
-        api.get("/api/health-score").catch(() => ({ data: null })),
-        api.get("/api/daily-limit").catch(() => ({ data: null })),
-        api.get("/api/weekly-digest").catch(() => ({ data: null })),
+      const [dash, tx] = await Promise.all([
+        api.get("/api/dashboard"),
+        api.get("/api/transactions"),
       ]);
 
       console.log("📊 Dashboard data:", dash.data);
-      console.log("🔔 Alerts:", alertsRes.data);
-      console.log("📈 Forecast:", forecastRes.data);
-      console.log("❤️ Health Score:", healthRes.data);
-      console.log("💸 Daily Limit:", dailyRes.data);
-      console.log("📅 Weekly Digest:", digestRes.data);
+      console.log("💳 Transactions:", tx.data);
 
-      setD(dash.data);
-      setAlerts(alertsRes.data);
-      setForecast(forecastRes.data);
-      setHealthScore(healthRes.data);
-      setDailyLimit(dailyRes.data);
-      setDigest(digestRes.data);
+      // ✅ merge transactions into dashboard object so UI can use both
+      setD({ ...dash.data, transactions: tx.data });
 
     } catch (err) {
       console.log("❌ Dashboard fetchAll error:", err);
@@ -67,18 +50,12 @@ export const Dashboard = () => {
   const handleExport = async (fmt) => {
     try {
       console.log(`📤 Exporting as ${fmt}...`);
-
-      // ✅ api replaces axios, no withCredentials
-      const r = await api.get(`/api/export/individual/${fmt}`, {
-        responseType: 'blob'
-      });
-
+      const r = await api.get(`/api/export/individual/${fmt}`, { responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([r.data]));
       const a = document.createElement('a');
       a.href = url;
       a.download = `report.${fmt}`;
       a.click();
-
       console.log(`✅ Export ${fmt} success`);
     } catch (err) {
       console.log("❌ Export error:", err);
@@ -108,11 +85,12 @@ export const Dashboard = () => {
     );
   };
 
+  // ✅ Uses balance/income/expenses — the fields your /api/dashboard actually returns
   const kpis = d ? [
-    { label: 'Total Balance',   value: d.net_worth,  spark: d.sparkline_income,   color: 'var(--dark)' },
-    { label: 'Monthly Income',  value: d.income,     spark: d.sparkline_income,   color: 'var(--green)' },
-    { label: 'Monthly Expenses',value: d.expenses,   spark: d.sparkline_expenses, color: 'var(--coral)' },
-    { label: 'Savings Growth',  value: d.net_worth,  spark: [],                   color: 'var(--green)',
+    { label: 'Total Balance',    value: d.balance,  spark: [], color: 'var(--dark)' },
+    { label: 'Monthly Income',   value: d.income,   spark: [], color: 'var(--green)' },
+    { label: 'Monthly Expenses', value: d.expenses, spark: [], color: 'var(--coral)' },
+    { label: 'Savings Growth',   value: d.balance,  spark: [], color: 'var(--green)',
       suffix: d.savings_rate > 0 ? ` (${d.savings_rate}%)` : '' },
   ] : [];
 
@@ -249,96 +227,87 @@ export const Dashboard = () => {
               ))}
             </div>
 
-            {/* Charts Row */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* Charts Row — only renders when backend sends this data */}
+            {(d.monthly_series?.length > 0 || d.category_breakdown?.length > 0) && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-              {/* Income vs Expenses Line Chart */}
-              {d.monthly_series && d.monthly_series.length > 0 && (
-                <div className="lg:col-span-2 cashly-card p-5" data-testid="line-chart">
-                  <h3 className="text-sm font-bold text-[var(--dark)] mb-4">Income vs Expenses</h3>
-                  <ResponsiveContainer width="100%" height={220}>
-                    <LineChart data={d.monthly_series}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#F0F0EE" vertical={false} />
-                      <XAxis dataKey="month" tick={{ fill: '#999', fontSize: 10 }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fill: '#999', fontSize: 10 }} axisLine={false} tickLine={false} />
-                      <Tooltip
-                        contentStyle={{ background: '#FFF', border: '1px solid #EEE', borderRadius: '12px', fontSize: '11px', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }}
-                        formatter={v => [formatINR(v)]}
-                      />
-                      <Line type="monotone" dataKey="income"   stroke="#4CAF85" strokeWidth={2.5} dot={{ r: 4, fill: '#4CAF85' }} />
-                      <Line type="monotone" dataKey="expenses" stroke="#F4845F" strokeWidth={2.5} dot={{ r: 4, fill: '#F4845F' }} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-
-              {/* Spending Breakdown Donut */}
-              {d.category_breakdown && d.category_breakdown.length > 0 && (
-                <div className="cashly-card p-5" data-testid="donut-chart">
-                  <h3 className="text-sm font-bold text-[var(--dark)] mb-4">Spending Breakdown</h3>
-                  <ResponsiveContainer width="100%" height={140}>
-                    <PieChart>
-                      <Pie data={d.category_breakdown} cx="50%" cy="50%" innerRadius={35} outerRadius={55} paddingAngle={3} dataKey="value">
-                        {d.category_breakdown.map((_, i) => (
-                          <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                        ))}
-                      </Pie>
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="space-y-1.5 mt-2">
-                    {d.category_breakdown.slice(0, 5).map((c, i) => (
-                      <div key={c.name} className="flex items-center justify-between text-[11px]">
-                        <div className="flex items-center gap-1.5">
-                          <span className="w-2 h-2 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                          <span className="text-[var(--text-secondary)]">{c.name}</span>
-                        </div>
-                        <span className="font-semibold text-[var(--dark)] tabular-nums">{formatINR(c.value)}</span>
-                      </div>
-                    ))}
+                {d.monthly_series?.length > 0 && (
+                  <div className="lg:col-span-2 cashly-card p-5" data-testid="line-chart">
+                    <h3 className="text-sm font-bold text-[var(--dark)] mb-4">Income vs Expenses</h3>
+                    <ResponsiveContainer width="100%" height={220}>
+                      <LineChart data={d.monthly_series}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#F0F0EE" vertical={false} />
+                        <XAxis dataKey="month" tick={{ fill: '#999', fontSize: 10 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fill: '#999', fontSize: 10 }} axisLine={false} tickLine={false} />
+                        <Tooltip
+                          contentStyle={{ background: '#FFF', border: '1px solid #EEE', borderRadius: '12px', fontSize: '11px', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }}
+                          formatter={v => [formatINR(v)]}
+                        />
+                        <Line type="monotone" dataKey="income"   stroke="#4CAF85" strokeWidth={2.5} dot={{ r: 4, fill: '#4CAF85' }} />
+                        <Line type="monotone" dataKey="expenses" stroke="#F4845F" strokeWidth={2.5} dot={{ r: 4, fill: '#F4845F' }} />
+                      </LineChart>
+                    </ResponsiveContainer>
                   </div>
-                </div>
-              )}
-            </div>
+                )}
 
-            {/* Forecast */}
-            {forecast?.forecast?.length > 0 && (
-              <div className="cashly-card p-5" data-testid="forecast-widget">
-                <h3 className="text-sm font-bold text-[var(--dark)] mb-3">3-Month Savings Forecast</h3>
-                <div className="grid grid-cols-3 gap-3">
-                  {forecast.forecast.map(f => (
-                    <div key={f.month} className="bg-[var(--cream-light)] rounded-2xl p-3 text-center">
-                      <p className="text-[9px] text-[var(--muted)]">{f.month}</p>
-                      <p className="text-sm font-bold text-[var(--green)] tabular-nums">{formatINR(f.projected_savings)}</p>
-                      <p className="text-[8px] text-[var(--muted)]">est. savings</p>
+                {d.category_breakdown?.length > 0 && (
+                  <div className="cashly-card p-5" data-testid="donut-chart">
+                    <h3 className="text-sm font-bold text-[var(--dark)] mb-4">Spending Breakdown</h3>
+                    <ResponsiveContainer width="100%" height={140}>
+                      <PieChart>
+                        <Pie data={d.category_breakdown} cx="50%" cy="50%" innerRadius={35} outerRadius={55} paddingAngle={3} dataKey="value">
+                          {d.category_breakdown.map((_, i) => (
+                            <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                          ))}
+                        </Pie>
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div className="space-y-1.5 mt-2">
+                      {d.category_breakdown.slice(0, 5).map((c, i) => (
+                        <div key={c.name} className="flex items-center justify-between text-[11px]">
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                            <span className="text-[var(--text-secondary)]">{c.name}</span>
+                          </div>
+                          <span className="font-semibold text-[var(--dark)] tabular-nums">{formatINR(c.value)}</span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Smart Alerts */}
-            {alerts.length > 0 && (
-              <div className="cashly-card p-5" data-testid="alerts-panel">
-                <h3 className="text-sm font-bold text-[var(--dark)] mb-3 flex items-center gap-2">
-                  <Sparkle size={16} weight="fill" className="text-[var(--coral)]" /> Smart Insights
-                </h3>
-                <div className="space-y-2">
-                  {alerts.map((a, i) => (
-                    <div key={i} className="flex items-start gap-2.5 p-3 rounded-xl bg-[var(--cream-light)]"
-                      data-testid={`alert-${a.type}`}>
-                      <div className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0
-                        ${a.severity === 'warning' ? 'bg-[var(--coral)]' :
-                          a.severity === 'success' ? 'bg-[var(--green)]' : 'bg-blue-400'}`}
-                      />
-                      <p className="text-xs text-[var(--text-secondary)] leading-relaxed">{a.message}</p>
-                    </div>
-                  ))}
+            {/* Recent Transactions */}
+            {d.transactions?.length > 0 && (
+              <div className="cashly-card p-5" data-testid="transactions-list">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-bold text-[var(--dark)]">Recent Transactions</h3>
+                  <button onClick={() => nav('/transactions')} className="text-xs text-[var(--coral)] font-semibold">View all</button>
                 </div>
+                {d.transactions.slice(0, 5).map((t, i) => (
+                  <div key={t._id || i} className="flex items-center justify-between py-2.5 border-b border-[var(--border)] last:border-0">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-8 h-8 rounded-xl flex items-center justify-center text-sm
+                        ${t.type === 'income' ? 'bg-green-50' : 'bg-red-50'}`}>
+                        {t.type === 'income' ? '↑' : '↓'}
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-[var(--dark)]">{t.title}</p>
+                        <p className="text-[10px] text-[var(--muted)]">{t.category}</p>
+                      </div>
+                    </div>
+                    <span className={`text-sm font-bold tabular-nums
+                      ${t.type === 'income' ? 'text-[var(--green)]' : 'text-[var(--coral)]'}`}>
+                      {t.type === 'income' ? '+' : '-'}{formatINR(t.amount)}
+                    </span>
+                  </div>
+                ))}
               </div>
             )}
 
-            {/* Goals Preview */}
-            {d.goals && d.goals.length > 0 && (
+            {/* Goals Preview — only if backend returns goals */}
+            {d.goals?.length > 0 && (
               <div className="cashly-card p-5" data-testid="goals-preview">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-bold text-[var(--dark)]">Savings Goals</h3>
@@ -358,81 +327,6 @@ export const Dashboard = () => {
                     </div>
                   );
                 })}
-              </div>
-            )}
-
-            {/* Health Score + Daily Limit */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-
-              {healthScore && (
-                <div className="cashly-card p-5 flex items-center gap-5" data-testid="health-score">
-                  <div className="relative w-20 h-20 flex-shrink-0">
-                    <svg className="w-20 h-20 -rotate-90" viewBox="0 0 80 80">
-                      <circle cx="40" cy="40" r="34" fill="none" stroke="var(--border)" strokeWidth="6" />
-                      <circle cx="40" cy="40" r="34" fill="none" stroke="var(--coral)" strokeWidth="6" strokeLinecap="round"
-                        strokeDasharray={`${(healthScore.score / 100) * 213.6} 213.6`}
-                        className="transition-all duration-1000"
-                      />
-                    </svg>
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="text-xl font-extrabold text-[var(--dark)]">{healthScore.score}</span>
-                    </div>
-                  </div>
-                  <div>
-                    <p className="text-xs font-bold text-[var(--dark)] mb-1">Financial Health</p>
-                    <p className="text-[10px] text-[var(--muted)] leading-relaxed">{healthScore.tips?.[0] || 'Keep up the good work!'}</p>
-                  </div>
-                </div>
-              )}
-
-              {dailyLimit && dailyLimit.limit > 0 && (
-                <div className="cashly-card p-5" data-testid="daily-limit">
-                  <p className="text-xs font-bold text-[var(--dark)] mb-2">Daily Spend Limit</p>
-                  <div className="flex items-baseline gap-2 mb-2">
-                    <span className="text-xl font-extrabold tabular-nums"
-                      style={{ color: dailyLimit.percentage >= 100 ? 'var(--red)' : dailyLimit.percentage >= 80 ? '#F59E0B' : 'var(--green)' }}>
-                      {formatINR(dailyLimit.remaining)}
-                    </span>
-                    <span className="text-xs text-[var(--muted)]">remaining of {formatINR(dailyLimit.limit)}</span>
-                  </div>
-                  <div className="w-full h-2 bg-[var(--cream-light)] rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all"
-                      style={{
-                        width: `${Math.min(dailyLimit.percentage, 100)}%`,
-                        background: dailyLimit.percentage >= 100 ? 'var(--red)' : dailyLimit.percentage >= 80 ? '#F59E0B' : 'var(--green)'
-                      }}
-                    />
-                  </div>
-                  <p className="text-[10px] text-[var(--muted)] mt-1">Today: {formatINR(dailyLimit.spent_today)} spent</p>
-                </div>
-              )}
-            </div>
-
-            {/* Weekly Digest */}
-            {digest && digest.total_spent > 0 && (
-              <div className="cashly-card p-5" data-testid="weekly-digest">
-                <h3 className="text-sm font-bold text-[var(--dark)] mb-3">Weekly Digest</h3>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
-                  <div className="bg-[var(--cream-light)] rounded-xl p-2.5">
-                    <p className="text-[9px] text-[var(--muted)]">Spent</p>
-                    <p className="text-sm font-bold text-[var(--coral)] tabular-nums">{formatINR(digest.total_spent)}</p>
-                  </div>
-                  <div className="bg-[var(--cream-light)] rounded-xl p-2.5">
-                    <p className="text-[9px] text-[var(--muted)]">Saved</p>
-                    <p className="text-sm font-bold text-[var(--green)] tabular-nums">{formatINR(digest.total_saved)}</p>
-                  </div>
-                  <div className="bg-[var(--cream-light)] rounded-xl p-2.5">
-                    <p className="text-[9px] text-[var(--muted)]">Top Category</p>
-                    <p className="text-sm font-bold text-[var(--dark)]">{digest.top_categories?.[0]?.name || '-'}</p>
-                  </div>
-                  <div className="bg-[var(--cream-light)] rounded-xl p-2.5">
-                    <p className="text-[9px] text-[var(--muted)]">vs Last Week</p>
-                    <p className="text-sm font-bold tabular-nums"
-                      style={{ color: digest.vs_last_week <= 0 ? 'var(--green)' : 'var(--coral)' }}>
-                      {digest.vs_last_week > 0 ? '+' : ''}{digest.vs_last_week}%
-                    </p>
-                  </div>
-                </div>
               </div>
             )}
 
@@ -479,18 +373,18 @@ export const Dashboard = () => {
             {/* Quick Access Grid */}
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3" data-testid="quick-access-grid">
               {[
-                { label: 'Budgets',      path: '/budgets',      emoji: '📊', feature: 'budgets' },
-                { label: 'Zero Budget',  path: '/zero-budget',  emoji: '🎯', feature: 'zero_budget' },
-                { label: 'Loans & EMI',  path: '/loans',        emoji: '🏦', feature: 'loans' },
-                { label: 'Credit Cards', path: '/credit-cards', emoji: '💳', feature: 'credit_cards' },
-                { label: 'Debt Payoff',  path: '/debt-payoff',  emoji: '⚡', feature: 'debt_payoff' },
-                { label: 'Investments',  path: '/investments',  emoji: '📈', feature: 'investments' },
-                { label: 'Real Estate',  path: '/real-estate',  emoji: '🏠', feature: 'real_estate' },
-                { label: 'Net Worth',    path: '/net-worth',    emoji: '💎', feature: 'net_worth' },
-                { label: 'SIP · RD · FD', path: '/sip-rd',     emoji: '🌱', feature: 'sip_rd' },
-                { label: 'Savings Jars', path: '/jars',         emoji: '🫙', feature: 'jars_unlimited' },
-                { label: 'Lend & Borrow', path: '/lend-borrow', emoji: '🤝', feature: 'lend_borrow' },
-                { label: 'Tax & 80C',   path: '/tax',           emoji: '🧾', feature: 'tax_basic' },
+                { label: 'Budgets',       path: '/budgets',      emoji: '📊', feature: 'budgets' },
+                { label: 'Zero Budget',   path: '/zero-budget',  emoji: '🎯', feature: 'zero_budget' },
+                { label: 'Loans & EMI',   path: '/loans',        emoji: '🏦', feature: 'loans' },
+                { label: 'Credit Cards',  path: '/credit-cards', emoji: '💳', feature: 'credit_cards' },
+                { label: 'Debt Payoff',   path: '/debt-payoff',  emoji: '⚡', feature: 'debt_payoff' },
+                { label: 'Investments',   path: '/investments',  emoji: '📈', feature: 'investments' },
+                { label: 'Real Estate',   path: '/real-estate',  emoji: '🏠', feature: 'real_estate' },
+                { label: 'Net Worth',     path: '/net-worth',    emoji: '💎', feature: 'net_worth' },
+                { label: 'SIP · RD · FD',path: '/sip-rd',       emoji: '🌱', feature: 'sip_rd' },
+                { label: 'Savings Jars',  path: '/jars',         emoji: '🫙', feature: 'jars_unlimited' },
+                { label: 'Lend & Borrow', path: '/lend-borrow',  emoji: '🤝', feature: 'lend_borrow' },
+                { label: 'Tax & 80C',     path: '/tax',          emoji: '🧾', feature: 'tax_basic' },
               ].map(item => {
                 const unlocked = item.feature === 'jars_unlimited' ? true : hasAccess(plan, item.feature);
                 const isLocked = !unlocked;
@@ -546,11 +440,11 @@ export const Dashboard = () => {
         data-testid="bottom-nav">
         <div className="flex items-center justify-around h-16 max-w-5xl mx-auto">
           {[
-            { icon: House,       label: 'Home',         path: '/dashboard' },
-            { icon: Receipt,     label: 'Transactions', path: '/transactions' },
-            { icon: Target,      label: 'Goals',        path: '/goals' },
-            { icon: ChartLine,   label: 'Reports',      path: '/dashboard' },
-            { icon: UserCircle,  label: 'Profile',      path: '/dashboard' },
+            { icon: House,      label: 'Home',         path: '/dashboard' },
+            { icon: Receipt,    label: 'Transactions', path: '/transactions' },
+            { icon: Target,     label: 'Goals',        path: '/goals' },
+            { icon: ChartLine,  label: 'Reports',      path: '/dashboard' },
+            { icon: UserCircle, label: 'Profile',      path: '/dashboard' },
           ].map(i => (
             <button
               key={i.label}
